@@ -9,22 +9,33 @@ import { create, all, MathNode } from "mathjs";
 const math = create(all);
 
 type GenVar = {
-  name: string;            // ユーザー変数名 (Unicode可)
-  order2: boolean;        // 2階（true）か1階（false）
-  initial: string;        // 初期値 (position)
-  initialDot: string;     // 初期速度 (only for order2)
-  expr: string;           // if order2 -> ddot expr, else -> dot expr
+  name: string;             // ユーザー変数名 (Unicode可)
+  order: number;            // 階数 (0, 1, 2 など)
+  initial: string;          // 初期値
+  initialDot?: string;      // 初期速度 (1階以上で有効)
+  initialDDot?: string;     // 初期加速度 (2階以上で有効)
+  expr: string;             // d^order/dt^order の右辺
 };
 
 const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
+// デフォルト色
+const DEFAULT_PARTICLE_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"];
 
 export default function ODESimulatorCanvas(): JSX.Element {
   // --- UI / variables ---
-  const [dim, setDim] = useState<number>(3); // 1..3
+  // 次元指定を削除。常にvars.lengthを使う。
   const [vars, setVars] = useState<GenVar[]>(() => [
-    { name: "x", order2: false, initial: "1", initialDot: "0", expr: "10*(y-x)" },
-    { name: "y", order2: false, initial: "0", initialDot: "0", expr: "x*(28-z)-y" },
-    { name: "z", order2: false, initial: "0", initialDot: "0", expr: "x*y-8/3*z" },
+    { name: "x", order: 1, initial: "1", expr: "10*(y-x)" },
+    { name: "y", order: 1, initial: "0", expr: "x*(28-z)-y" },
+    { name: "z", order: 1, initial: "0", expr: "x*y-8/3*z" },
+  ]);
+
+  // 軸表示・質点色・軌跡色
+  const [showAxes, setShowAxes] = useState<boolean>(true);
+  const [particleColors, setParticleColors] = useState<string[]>([
+    DEFAULT_PARTICLE_COLORS[0],
+    DEFAULT_PARTICLE_COLORS[1],
+    DEFAULT_PARTICLE_COLORS[2],
   ]);
 
   const [running, setRunning] = useState(false);
@@ -47,42 +58,108 @@ export default function ODESimulatorCanvas(): JSX.Element {
   const rafRef = useRef<number | null>(null);
 
   // helpers
-  const clampDim = (n: number) => Math.max(1, Math.min(3, n));
+  // clampDim削除
+
+// Top-level Greek ASCII-to-Unicode map
+const greekMap: Record<string, string> = {
+  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", zeta: "ζ",
+  eta: "η", theta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν",
+  xi: "ξ", omicron: "ο", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", upsilon: "υ",
+  phi: "φ", chi: "χ", psi: "ψ", omega: "ω"
+};
+
+// Function to render variable names with Greek mapping
+function renderVarName(name: string): string {
+  if (!name) return name;
+  return greekMap[name] || name;
+}
+
+// Preprocess apostrophe-based derivatives and ASCII Greek spellings
+function preprocessExpr(expr: string): string {
+  if (!expr) return expr;
+  // まずギリシャ文字ASCIIをUnicode変換
+  for (const [key, val] of Object.entries(greekMap)) {
+    expr = expr.replace(new RegExp(`\\b${key}\\b`, "g"), val);
+  }
+  // アポストロフィ微分を高階から順に変換
+  expr = expr
+    .replace(/([a-zA-Zα-ωΑ-Ω]+)'''/g, "$1_dddot") // 3階
+    .replace(/([a-zA-Zα-ωΑ-Ω]+)''/g, "$1_ddot")   // 2階
+    .replace(/([a-zA-Zα-ωΑ-Ω]+)'/g, "$1_dot");   // 1階
+  return expr;
+}
 
   // --- Build expanded first-order system from vars ---
+  // 新: ユーザーが「theta'' = ...」のような全体式を入力した場合にも対応
+  // 1. 各exprで "var'''", "var''", "var'" を変換
+  // 2. 変数名(g.name)でギリシャASCIIも変換
+  // 3. 全体式入力（例: theta'' = ...）をパースし、分解してvarsを再構築
+  //    ただし、既存UIのままなので、式欄に = が含まれていれば分割する
   const buildSystem = () => {
-    // Determine expanded variable names and mapping:
-    // For each GenVar g:
-    // - if order2: [g.name, g.name + "_dot"]
-    // - else: [g.name]
+    // まず、全体式（=を含む）を含む変数をパースして再構築
+    let newVars = vars.map(v => ({ ...v }));
+    let needsRewrite = false;
+    for (let i = 0; i < newVars.length; i++) {
+      const g = newVars[i];
+      const eqMatch = g.expr.match(/^\s*([a-zA-Zα-ωΑ-Ω]+)((?:'*)?)\s*=\s*(.+)$/);
+      if (eqMatch) {
+        let name = eqMatch[1];
+        let apostrophes = eqMatch[2] || "";
+        let rhs = eqMatch[3];
+        // ギリシャASCII変換
+        for (const [k, v] of Object.entries(greekMap)) {
+          if (name === k) name = v;
+        }
+        // 階数判定
+        let order = apostrophes.length;
+        // 既存変数名と違う場合は上書き
+        g.name = name;
+        g.order = order;
+        g.expr = rhs.trim();
+        needsRewrite = true;
+      }
+    }
+    if (needsRewrite) {
+      setVars(newVars);
+    }
+    // 以降は newVars を使う
     const expanded: string[] = [];
-    vars.slice(0, dim).forEach(g => {
-      const base = g.name || `x${expanded.length + 1}`;
+    newVars.forEach((g, idx) => {
+      let base = g.name || `x${expanded.length + 1}`;
+      // ギリシャASCII変換
+      for (const [k, v] of Object.entries(greekMap)) {
+        if (base === k) base = v;
+      }
       expanded.push(base);
-      if (g.order2) expanded.push(`${base}_dot`);
+      for (let o = 1; o < (g.order || 0); o++) {
+        expanded.push(`${base}_${"d".repeat(o)}ot`);
+      }
     });
     expandedVarNamesRef.current = expanded;
 
     // Build RHS expressions list aligned with expanded names
-    // For order2 var: we set:
-    //   d(base)/dt = base_dot
-    //   d(base_dot)/dt = expr (user-provided)
-    // For order1 var:
-    //   d(base)/dt = expr
     const exprs: string[] = [];
-    for (let i = 0; i < vars.slice(0, dim).length; i++) {
-      const g = vars[i];
-      const base = g.name || `x${i+1}`;
-      if (g.order2) {
-        // base' = base_dot
-        exprs.push(`${base}_dot`);
-        // base_dot' = ddot expr (g.expr)
-        exprs.push(g.expr || "0");
-      } else {
-        // base' = expr
-        exprs.push(g.expr || "0");
+    newVars.forEach((g, idx) => {
+      let base = g.name || `x${idx+1}`;
+      // ギリシャASCII変換
+      for (const [k, v] of Object.entries(greekMap)) {
+        if (base === k) base = v;
       }
-    }
+      if (g.order === 0) {
+        exprs.push("0");
+      } else if (g.order === 1) {
+        exprs.push(preprocessExpr(g.expr) || "0");
+      } else if (g.order === 2) {
+        exprs.push(`${base}_dot`);
+        exprs.push(preprocessExpr(g.expr) || "0");
+      } else if (g.order > 2) {
+        for (let o = 1; o < g.order; o++) {
+          const prev = o === 1 ? base : `${base}_${"d".repeat(o - 1)}ot`;
+          exprs.push(prev);
+        }
+        exprs.push(preprocessExpr(g.expr) || "0");
+      }
+    });
 
     // compile nodes
     compiledRef.current = exprs.map(e => {
@@ -94,28 +171,36 @@ export default function ODESimulatorCanvas(): JSX.Element {
     });
 
     // initialize state vector from initial values (if history exists, continue from last)
-    const state0 = expanded.map((name, idx) => {
-      // find corresponding GenVar initial:
-      // name may be 'x' or 'x_dot'
-      const base = name.endsWith("_dot") ? name.slice(0, -4) : name;
-      const gv = vars.slice(0, dim).find(v => v.name === base);
-      if (!gv) return 0;
-      if (name.endsWith("_dot")) {
-        const parsed = Number(gv.initialDot);
-        return Number.isFinite(parsed) ? parsed : 0;
-      } else {
-        const parsed = Number(gv.initial);
-        return Number.isFinite(parsed) ? parsed : 0;
+    const state0 = [];
+    let varIdx = 0;
+    newVars.forEach((g, idx) => {
+      let base = g.name || `x${varIdx + 1}`;
+      for (const [k, v] of Object.entries(greekMap)) {
+        if (base === k) base = v;
+      }
+      if (g.order === 0) {
+        state0.push(Number(g.initial) || 0);
+        varIdx++;
+        return;
+      }
+      for (let o = 0; o < g.order; o++) {
+        if (o === 0) {
+          state0.push(Number(g.initial) || 0);
+        } else if (o === 1) {
+          state0.push(Number(g.initialDot) || 0);
+        } else if (o === 2) {
+          state0.push(Number(g.initialDDot) || 0);
+        } else {
+          state0.push(0);
+        }
+        varIdx++;
       }
     });
-
-    // if history exists and timeRef matches, continue from last; otherwise use init state
     if (genHistoryRef.current.length > 0) {
       const last = genHistoryRef.current[genHistoryRef.current.length - 1];
       if (Math.abs(last.time - timeRef.current) < 1e-12) {
         stateRef.current = [...last.values];
       } else if (last.time <= timeRef.current) {
-        // use last values
         stateRef.current = last.values.slice(0, state0.length).concat(state0.slice(last.values.length));
       } else {
         stateRef.current = state0;
@@ -123,9 +208,7 @@ export default function ODESimulatorCanvas(): JSX.Element {
     } else {
       stateRef.current = state0;
     }
-
-    // clear trails if restart
-    // (we won't auto-clear here; leave control to reset button)
+    // (trails not auto-cleared here)
   };
 
   // compile helper
@@ -133,7 +216,7 @@ export default function ODESimulatorCanvas(): JSX.Element {
     if (!expr || expr.trim() === "") return null;
     try {
       // parse but do not compile to function yet
-      return math.parse(expr);
+      return math.parse(preprocessExpr(expr));
     } catch (err) {
       console.warn("parse error", expr, err);
       return null;
@@ -217,7 +300,7 @@ export default function ODESimulatorCanvas(): JSX.Element {
 
   // --- Simulation loop ---
   useEffect(() => {
-    // whenever vars or dim changes, rebuild system but DO NOT auto-start
+    // whenever vars changes, rebuild system but DO NOT auto-start
     buildSystem();
     // reset particle pos to initial state
     const expanded = expandedVarNamesRef.current;
@@ -232,7 +315,7 @@ export default function ODESimulatorCanvas(): JSX.Element {
     timeRef.current = 0;
     // compile nodes already done in buildSystem
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vars, dim]);
+  }, [vars]);
 
   useEffect(() => {
     if (!running) {
@@ -292,13 +375,11 @@ export default function ODESimulatorCanvas(): JSX.Element {
 
           const next = { ...prev };
           const baseList = Array.from(seenBases);
-          // ensure using current vars (first dim bases)
-          for (let i = 0; i < Math.min(dim, vars.length); i++) {
+          // ensure using current vars (first vars.length bases)
+          for (let i = 0; i < vars.length; i++) {
             const baseName = vars[i].name || `x${i+1}`;
             const val = baseVals[i] ?? 0;
             const key = `v:${baseName}`;
-            const x = i * 2; // spread for clarity if needed; but we map actual coordinates, so use real coords
-            // Actually use mapped coord: x->baseVals[0], y->baseVals[1], z->baseVals[2]
             const pxv = baseVals[0] ?? 0;
             const pyv = baseVals[1] ?? 0;
             const pzv = baseVals[2] ?? 0;
@@ -321,7 +402,7 @@ export default function ODESimulatorCanvas(): JSX.Element {
       rafRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, dt, playbackSpeed, trailLength, dim, vars]);
+  }, [running, dt, playbackSpeed, trailLength, vars]);
 
   // UI actions
   const toggleRunning = () => setRunning(r => !r);
@@ -348,7 +429,10 @@ export default function ODESimulatorCanvas(): JSX.Element {
 
   const addVariable = () => {
     if (vars.length >= 3) return;
-    setVars(prev => [...prev, { name: `x${prev.length+1}`, order2: false, initial: "0", initialDot: "0", expr: "0" }]);
+    setVars(prev => [
+      ...prev,
+      { name: `x${prev.length+1}`, order: 1, initial: "0", expr: "0" }
+    ]);
   };
 
   const removeVariable = (i: number) => {
@@ -376,13 +460,26 @@ export default function ODESimulatorCanvas(): JSX.Element {
     setParticlePos([s[0] ?? 0, s[1] ?? 0, s[2] ?? 0]);
   };
 
-  // color for var container
-  const containerColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
+  // 色: ユーザー指定 or デフォルト
+  const containerColor = (index: number) => particleColors[index] || DEFAULT_PARTICLE_COLORS[index % DEFAULT_PARTICLE_COLORS.length];
+  // 軌跡色: 質点色を透明度0.3で
+  function trailColor(index: number): string {
+    const c = containerColor(index);
+    // HEX (#rrggbb) → rgba
+    if (c.startsWith("#") && c.length === 7) {
+      const r = parseInt(c.slice(1, 3), 16);
+      const g = parseInt(c.slice(3, 5), 16);
+      const b = parseInt(c.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},0.3)`;
+    }
+    // fallback
+    return c;
+  }
 
   // AxesHelper component definition
   const AxesHelper = () => {
     const length = 1000; // Represents "infinite" length
-
+    if (!showAxes) return null;
     return (
       <>
         {/* X-axis (Red) */}
@@ -402,24 +499,14 @@ export default function ODESimulatorCanvas(): JSX.Element {
         <div className="flex items-center gap-2 mb-2 flex-wrap">
           <button className="px-3 py-1 rounded bg-green-500" onClick={toggleRunning}>{running ? "停止" : "再生"}</button>
           <button className="px-3 py-1 rounded bg-blue-500" onClick={resetAll}>リセット</button>
-
-          <label className="text-sm">次元:
-            <select value={dim} onChange={(e) => setDim(clampDim(Number(e.target.value)))} className="ml-1 bg-slate-700 rounded px-1">
-              <option value={1}>1D</option>
-              <option value={2}>2D</option>
-              <option value={3}>3D</option>
-            </select>
-          </label>
-
+          {/* 次元選択UI削除 */}
           <label className="text-sm">dt:
             <input className="ml-1 w-20 rounded bg-slate-700 text-white px-1" value={String(dt)} onChange={(e) => setDt(Number(e.target.value) || dt)} />
           </label>
-
           <label className="text-sm">速度:
             <input type="range" min="0.1" max="5" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(Number(e.target.value))} className="mx-2" />
             <span>{playbackSpeed.toFixed(1)}x</span>
           </label>
-
           <button className="ml-auto bg-indigo-600 px-2 py-1 rounded" onClick={applyAndCompile}>式を適用</button>
         </div>
 
@@ -434,11 +521,12 @@ export default function ODESimulatorCanvas(): JSX.Element {
             {/* Axes helper */}
             <AxesHelper />
             {/* Particle */}
-            <mesh position={particlePos}>
-              <sphereGeometry args={[0.2, 32, 32]} />
-              <meshStandardMaterial color={containerColor(0)} />
-            </mesh>
-
+            {vars.slice(0, 3).map((g, i) => (
+              <mesh key={i} position={particlePos}>
+                <sphereGeometry args={[0.2, 32, 32]} />
+                <meshStandardMaterial color={containerColor(i)} />
+              </mesh>
+            ))}
             {/* variable trails */}
             {Object.entries(variableTrails).map(([key, trail]) => {
               if (!trail || trail.length < 2) return null;
@@ -446,10 +534,9 @@ export default function ODESimulatorCanvas(): JSX.Element {
               const varName = key.slice(2);
               // pick color from var index
               const idx = Math.max(0, vars.findIndex(v => v.name === varName));
-              const col = containerColor(idx);
+              const col = trailColor(idx);
               return <Line key={key} points={points} lineWidth={2} color={col} />;
             })}
-
             <OrbitControls />
           </Canvas>
         </div>
@@ -467,6 +554,10 @@ export default function ODESimulatorCanvas(): JSX.Element {
             <input type="checkbox" checked={showTrail} onChange={(e) => setShowTrail(e.target.checked)} />
             軌跡表示
           </label>
+          <label className="flex items-center gap-1 ml-2">
+            <input type="checkbox" checked={showAxes} onChange={e => setShowAxes(e.target.checked)} />
+            軸表示
+          </label>
         </div>
       </div>
 
@@ -480,15 +571,25 @@ export default function ODESimulatorCanvas(): JSX.Element {
         {vars.slice(0, 3).map((g, i) => (
           <div key={i} className="border border-slate-700 rounded p-3" style={{ background: containerColor(i) + "22" }}>
             <div className="flex items-center justify-between">
-              <strong style={{ color: containerColor(i) }}>{`${i+1}. ${g.name || `var${i+1}`}`}</strong>
+              <strong style={{ color: containerColor(i) }}>
+                {`${i+1}. ${renderVarName(g.name || `var${i+1}`)}`}
+              </strong>
               <div className="flex items-center gap-2">
-                <label className="text-xs">2階:
-                  <input type="checkbox" checked={g.order2} onChange={(e) => updateVar(i, { order2: e.target.checked })} className="ml-1" />
+                <label className="text-xs">階数:
+                  <select
+                    className="ml-1 bg-slate-700 rounded px-1"
+                    value={g.order ?? 1}
+                    onChange={e => updateVar(i, { order: Number(e.target.value) })}
+                  >
+                    <option value={0}>0階</option>
+                    <option value={1}>1階</option>
+                    <option value={2}>2階</option>
+                    <option value={3}>3階</option>
+                  </select>
                 </label>
                 <button className="bg-red-600 px-2 py-0.5 rounded text-sm" onClick={() => removeVariable(i)}>削除</button>
               </div>
             </div>
-
             <div className="mt-2 grid grid-cols-2 gap-2 items-center">
               <div>
                 <div className="text-xs">変数名</div>
@@ -498,20 +599,48 @@ export default function ODESimulatorCanvas(): JSX.Element {
                 <div className="text-xs">初期値 ({g.name})</div>
                 <input className="w-full rounded bg-slate-700 px-1" value={g.initial} onChange={(e) => updateVar(i, { initial: e.target.value })} />
               </div>
-              {g.order2 && (
+              {(g.order ?? 1) >= 2 && (
                 <div>
                   <div className="text-xs">初期速度 ({g.name}˙)</div>
-                  <input className="w-full rounded bg-slate-700 px-1" value={g.initialDot} onChange={(e) => updateVar(i, { initialDot: e.target.value })} />
+                  <input className="w-full rounded bg-slate-700 px-1" value={g.initialDot ?? ""} onChange={(e) => updateVar(i, { initialDot: e.target.value })} />
                 </div>
               )}
+              {(g.order ?? 1) >= 3 && (
+                <div>
+                  <div className="text-xs">初期加速度 ({g.name}¨)</div>
+                  <input className="w-full rounded bg-slate-700 px-1" value={g.initialDDot ?? ""} onChange={(e) => updateVar(i, { initialDDot: e.target.value })} />
+                </div>
+              )}
+              <div>
+                <div className="text-xs">質点色</div>
+                <input
+                  type="color"
+                  className="w-8 h-8 rounded bg-transparent border-0 p-0"
+                  value={particleColors[i] || DEFAULT_PARTICLE_COLORS[i]}
+                  onChange={e => {
+                    const newColors = particleColors.slice();
+                    newColors[i] = e.target.value;
+                    setParticleColors(newColors);
+                  }}
+                  style={{ background: "transparent" }}
+                />
+              </div>
             </div>
-
             <div className="mt-2">
-              <div className="text-xs">微分方程式（右辺）</div>
+              <div className="text-xs">微分方程式</div>
               <textarea className="w-full rounded bg-slate-700 px-1 py-1 mt-1 text-sm" value={g.expr} onChange={(e) => updateVar(i, { expr: e.target.value })} rows={3} />
               <div className="mt-1 text-xs text-gray-300">
-                {g.order2 ? "これは d²/dt² の右辺です（例: -sin(θ)）" : "これは d/dt の右辺です（例: -y - z）"}<br />
-                変数名は Unicode（θ, ω など）をそのまま使えます。式中では他の変数名や t、定数 eps0, mu0, k, g, G を使用可。
+                {(g.order ?? 1) === 0
+                  ? "これは定数（微分しません）"
+                  : (g.order ?? 1) === 1
+                  ? "これは d/dt の右辺です（例: -y - z）"
+                  : `これは d${g.order}/dt${g.order} の右辺です（例: -sin(θ)）`
+                }<br />
+                変数名は Unicode（θ, ω など）をそのまま使えます。<br />
+                また、ギリシャ文字は「theta」「omega」「gamma」などASCII綴りでも入力できます（例: theta → θ, omega → ω）。<br />
+                式中では他の変数名や t、定数 eps0, mu0, k, g, G を使用可。<br />
+                微分はアポストロフィで入力してください（例: theta' → θ˙, theta'' → θ¨）。<br />
+                <span className="text-yellow-400">全体式（例: theta'' = -0.2*theta'-1.5^2*sin(theta)+1.2*cos(0.9*t)）も入力可能です。</span>
               </div>
             </div>
           </div>
