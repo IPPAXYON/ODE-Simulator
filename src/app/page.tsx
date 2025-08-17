@@ -552,6 +552,15 @@ function preprocessExpr(expr: string): string {
             <input type="checkbox" checked={showAxes} onChange={e => setShowAxes(e.target.checked)} />
             軸表示
           </label>
+          <label className="flex items-center gap-1 ml-2">
+            質点色:
+            <input
+              type="color"
+              className="ml-1 w-6 h-6 rounded border-0 p-0"
+              value={particleColor}
+              onChange={e => setParticleColor(e.target.value)}
+            />
+          </label>
         </div>
       </div>
 
@@ -560,16 +569,6 @@ function preprocessExpr(expr: string): string {
         <div className="flex items-center gap-2">
           <button className="px-3 py-1 rounded bg-purple-600" onClick={addVariable} disabled={vars.length >= 3}>変数を追加</button>
           <div className="text-xs text-gray-300">（上から順に 赤, 緑, 青 軸に対応）</div>
-        </div>
-        <div className="border border-slate-700 rounded p-3">
-          <div className="text-xs">質点色</div>
-          <input
-            type="color"
-            className="w-8 h-8 rounded bg-transparent border-0 p-0"
-            value={particleColor}
-            onChange={e => setParticleColor(e.target.value)}
-            style={{ background: "transparent" }}
-          />
         </div>
 
         {vars.slice(0, 3).map((g, i) => (
