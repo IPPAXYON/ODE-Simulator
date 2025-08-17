@@ -625,8 +625,7 @@ function preprocessExpr(expr: string): string {
                   ? "微分方程式を入力してください。"
                   : `微分方程式を入力してください。`
                 }<br />
-                変数名は Unicode（θ, ω など）をそのまま使えます。<br />
-                また、ギリシャ文字は「theta」「omega」「gamma」などASCII綴りでも入力できます（例: theta → θ, omega → ω）。<br />
+                ギリシャ文字は「theta」「omega」「gamma」などASCII綴りで入力できます（例: theta → θ, omega → ω）。<br />
                 式中では t、定数 eps0, mu0, k, g, G を使用可能。<br />
                 微分はアポストロフィで入力してください（例: theta' , theta''）。<br />
               </div>
