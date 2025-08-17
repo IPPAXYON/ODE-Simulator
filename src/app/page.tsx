@@ -21,7 +21,7 @@ const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
 // デフォルト色
 const DEFAULT_PARTICLE_COLOR = "#ff4d4d";
 
-export default function ODESimulatorCanvas(): JSX.Element {
+export default function ODESimulatorCanvas(){
   // --- UI / variables ---
   // 次元指定を削除。常にvars.lengthを使う。
   const [vars, setVars] = useState<GenVar[]>(() => [
@@ -75,7 +75,7 @@ function preprocessExpr(expr: string): string {
 
     const expanded: string[] = [];
     newVars.forEach((g) => {
-      let base = g.name || `x${expanded.length + 1}`;
+      const base = g.name || `x${expanded.length + 1}`;
       expanded.push(base);
       for (let o = 1; o < (g.order || 0); o++) {
         expanded.push(`${base}_${"d".repeat(o)}ot`);
@@ -85,7 +85,7 @@ function preprocessExpr(expr: string): string {
 
     const exprs: string[] = [];
     newVars.forEach((g) => {
-      let base = g.name || `x${exprs.length + 1}`;
+      const base = g.name || `x${exprs.length + 1}`;
       if (g.order === 0) {
         exprs.push("0");
       } else if (g.order === 1) {
@@ -146,10 +146,13 @@ function preprocessExpr(expr: string): string {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function evaluateNode(node: MathNode | null, scope: Record<string, any>): number {
     if (!node) return 0;
     try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const compiled = (node as any).compile ? (node as any).compile() : node;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const v = typeof compiled.evaluate === "function" ? compiled.evaluate(scope) : compiled(scope);
       if (typeof v === "number") return v;
       if (Array.isArray(v)) return v[0] ?? 0;
@@ -163,6 +166,7 @@ function preprocessExpr(expr: string): string {
   // build f(y,t) from compiledRef and expandedVarNamesRef
   const evalDeriv = (y: number[], tNow: number) => {
     const expanded = expandedVarNamesRef.current;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const scope: Record<string, any> = { t: tNow };
     // constants
     // expose constants if needed; keep same as earlier
@@ -189,14 +193,13 @@ function preprocessExpr(expr: string): string {
       // compute from current particle positions (mapping variables to axes)
       const x = y[0] ?? 0;
       const yy = y[1] ?? 0;
-      const z = y[2] ?? 0;
       // particle indexing uses 1-based like earlier computeDist? simple Euclidean with available dims
       return Math.hypot(x - (i === 2 ? yy : 0), yy - (j === 2 ? y[1] : 0)); // simple placeholder (user likely won't use)
     };
-    scope.dx = (i: number, j: number) => 0;
-    scope.dy = (i: number, j: number) => 0;
-    scope.dz = (i: number, j: number) => 0;
-    scope.rvec = (i: number, j: number) => [0,0,0];
+    scope.dx = (_i: number, _j: number) => 0;
+    scope.dy = (_i: number, _j: number) => 0;
+    scope.dz = (_i: number, _j: number) => 0;
+    scope.rvec = (_i: number, _j: number) => [0,0,0];
 
     const out: number[] = [];
     for (let i = 0; i < compiledRef.current.length; i++) {
@@ -278,11 +281,9 @@ function preprocessExpr(expr: string): string {
           }
 
           const next = { ...prev };
-          const baseList = Array.from(seenBases);
           // ensure using current vars (first vars.length bases)
           for (let i = 0; i < vars.length; i++) {
             const baseName = vars[i].name || `x${i+1}`;
-            const val = baseVals[i] ?? 0;
             const key = `v:${baseName}`;
             const pxv = baseVals[0] ?? 0;
             const pyv = baseVals[1] ?? 0;
