@@ -58,76 +58,24 @@ export default function ODESimulatorCanvas(): JSX.Element {
   // helpers
   // clampDim削除
 
-// Top-level Greek ASCII-to-Unicode map
-const greekMap: Record<string, string> = {
-  alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", zeta: "ζ",
-  eta: "η", theta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν",
-  xi: "ξ", omicron: "ο", pi: "π", rho: "ρ", sigma: "σ", tau: "τ", upsilon: "υ",
-  phi: "φ", chi: "χ", psi: "ψ", omega: "ω"
-};
-
-// Function to render variable names with Greek mapping
 function renderVarName(name: string): string {
-  if (!name) return name;
-  return greekMap[name] || name;
+  return name;
 }
 
-// Preprocess apostrophe-based derivatives and ASCII Greek spellings
 function preprocessExpr(expr: string): string {
   if (!expr) return expr;
-  // まずギリシャ文字ASCIIをUnicode変換
-  for (const [key, val] of Object.entries(greekMap)) {
-    expr = expr.replace(new RegExp(`\b${key}\b`, "g"), val);
-  }
-  // アポストロフィ微分を高階から順に変換
-  expr = expr
-    .replace(/([a-zA-Zα-ωΑ-Ω]+)'''/g, "$1_dddot") // 3階
-    .replace(/([a-zA-Zα-ωΑ-Ω]+)''/g, "$1_ddot")   // 2階
-    .replace(/([a-zA-Zα-ωΑ-Ω]+)'/g, "$1_dot");   // 1階
-  return expr;
+  return expr
+    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'''/g, "$1_dddot") // 3階
+    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)''/g, "$1_ddot")   // 2階
+    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'/g, "$1_dot");   // 1階
 }
 
-  // --- Build expanded first-order system from vars ---
-  // 新: ユーザーが「theta'' = ...」のような全体式を入力した場合にも対応
-  // 1. 各exprで "var'''", "var''", "var'" を変換
-  // 2. 変数名(g.name)でギリシャASCIIも変換
-  // 3. 全体式入力（例: theta'' = ...）をパースし、分解してvarsを再構築
-  //    ただし、既存UIのままなので、式欄に = が含まれていれば分割する
   const buildSystem = () => {
-    // まず、全体式（=を含む）を含む変数をパースして再構築
-    let newVars = vars.map(v => ({ ...v }));
-    let needsRewrite = false;
-    for (let i = 0; i < newVars.length; i++) {
-      const g = newVars[i];
-      const eqMatch = g.expr.match(/^\s*([a-zA-Zα-ωΑ-Ω]+)((?:'*)?)\s*=\s*(.+)$/);
-      if (eqMatch) {
-        let name = eqMatch[1];
-        let apostrophes = eqMatch[2] || "";
-        let rhs = eqMatch[3];
-        // ギリシャASCII変換
-        for (const [k, v] of Object.entries(greekMap)) {
-          if (name === k) name = v;
-        }
-        // 階数判定
-        let order = apostrophes.length;
-        // 既存変数名と違う場合は上書き
-        g.name = name;
-        g.order = order;
-        g.expr = rhs.trim();
-        needsRewrite = true;
-      }
-    }
-    if (needsRewrite) {
-      setVars(newVars);
-    }
-    // 以降は newVars を使う
+    const newVars = vars.map(v => ({ ...v }));
+
     const expanded: string[] = [];
-    newVars.forEach((g, idx) => {
+    newVars.forEach((g) => {
       let base = g.name || `x${expanded.length + 1}`;
-      // ギリシャASCII変換
-      for (const [k, v] of Object.entries(greekMap)) {
-        if (base === k) base = v;
-      }
       expanded.push(base);
       for (let o = 1; o < (g.order || 0); o++) {
         expanded.push(`${base}_${"d".repeat(o)}ot`);
@@ -135,31 +83,21 @@ function preprocessExpr(expr: string): string {
     });
     expandedVarNamesRef.current = expanded;
 
-    // Build RHS expressions list aligned with expanded names
     const exprs: string[] = [];
-    newVars.forEach((g, idx) => {
-      let base = g.name || `x${idx+1}`;
-      // ギリシャASCII変換
-      for (const [k, v] of Object.entries(greekMap)) {
-        if (base === k) base = v;
-      }
+    newVars.forEach((g) => {
+      let base = g.name || `x${exprs.length + 1}`;
       if (g.order === 0) {
         exprs.push("0");
       } else if (g.order === 1) {
         exprs.push(preprocessExpr(g.expr) || "0");
-      } else if (g.order === 2) {
-        exprs.push(`${base}_dot`);
-        exprs.push(preprocessExpr(g.expr) || "0");
-      } else if (g.order > 2) {
+      } else {
         for (let o = 1; o < g.order; o++) {
-          const prev = o === 1 ? base : `${base}_${"d".repeat(o - 1)}ot`;
-          exprs.push(prev);
+          exprs.push(`${base}_${"d".repeat(o)}ot`);
         }
         exprs.push(preprocessExpr(g.expr) || "0");
       }
     });
 
-    // compile nodes
     compiledRef.current = exprs.map(e => {
       try {
         return compileExpression(e);
@@ -168,32 +106,20 @@ function preprocessExpr(expr: string): string {
       }
     });
 
-    // initialize state vector from initial values (if history exists, continue from last)
-    const state0 = [];
-    let varIdx = 0;
-    newVars.forEach((g, idx) => {
-      let base = g.name || `x${varIdx + 1}`;
-      for (const [k, v] of Object.entries(greekMap)) {
-        if (base === k) base = v;
-      }
+    const state0: number[] = [];
+    newVars.forEach((g) => {
       if (g.order === 0) {
         state0.push(Number(g.initial) || 0);
-        varIdx++;
         return;
       }
       for (let o = 0; o < g.order; o++) {
-        if (o === 0) {
-          state0.push(Number(g.initial) || 0);
-        } else if (o === 1) {
-          state0.push(Number(g.initialDot) || 0);
-        } else if (o === 2) {
-          state0.push(Number(g.initialDDot) || 0);
-        } else {
-          state0.push(0);
-        }
-        varIdx++;
+        if (o === 0) state0.push(Number(g.initial) || 0);
+        else if (o === 1) state0.push(Number(g.initialDot) || 0);
+        else if (o === 2) state0.push(Number(g.initialDDot) || 0);
+        else state0.push(0);
       }
     });
+
     if (genHistoryRef.current.length > 0) {
       const last = genHistoryRef.current[genHistoryRef.current.length - 1];
       if (Math.abs(last.time - timeRef.current) < 1e-12) {
@@ -206,7 +132,6 @@ function preprocessExpr(expr: string): string {
     } else {
       stateRef.current = state0;
     }
-    // (trails not auto-cleared here)
   };
 
   // compile helper
@@ -254,7 +179,7 @@ function preprocessExpr(expr: string): string {
     // also map base names to their value (if both present, base is first occurrence)
     const baseMap: Record<string, number> = {};
     expanded.forEach((nm, i) => {
-      const base = nm.endsWith("_dot") ? nm.slice(0, -4) : nm;
+      const base = nm.split('_')[0];
       if (baseMap[base] === undefined) baseMap[base] = y[i];
     });
     Object.entries(baseMap).forEach(([k, v]) => { scope[k] = v; });
@@ -295,25 +220,6 @@ function preprocessExpr(expr: string): string {
     const newState = state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
     return newState;
   };
-
-  // --- Simulation loop ---
-  useEffect(() => {
-    // whenever vars changes, rebuild system but DO NOT auto-start
-    buildSystem();
-    // reset particle pos to initial state
-    const expanded = expandedVarNamesRef.current;
-    const st = stateRef.current;
-    const px = st[0] ?? 0;
-    const py = st[1] ?? 0;
-    const pz = st[2] ?? 0;
-    setParticlePos([px, py, pz]);
-    // reset trails
-    setVariableTrails({});
-    genHistoryRef.current = [];
-    timeRef.current = 0;
-    // compile nodes already done in buildSystem
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vars]);
 
   useEffect(() => {
     if (!running) {
@@ -356,7 +262,7 @@ function preprocessExpr(expr: string): string {
         const seenBases = new Set<string>();
         for (let i = 0; i < expanded.length && baseVals.length < 3; i++) {
           const nm = expanded[i];
-          const base = nm.endsWith("_dot") ? nm.slice(0, -4) : nm;
+          const base = nm.split('_')[0];
           if (!seenBases.has(base)) {
             seenBases.add(base);
             baseVals.push(stateRef.current[i] ?? 0);
@@ -400,7 +306,7 @@ function preprocessExpr(expr: string): string {
       rafRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, dt, playbackSpeed, trailLength, vars]);
+  }, [running, dt, playbackSpeed, trailLength]);
 
   // UI actions
   const toggleRunning = () => setRunning(r => !r);
@@ -418,6 +324,9 @@ function preprocessExpr(expr: string): string {
   };
 
   const updateVar = (i: number, patch: Partial<GenVar>) => {
+    if (typeof patch.expr === 'string') {
+      patch.expr = patch.expr.replace(/=/g, ''); // Remove all '='
+    }
     setVars(prev => {
       const next = prev.slice();
       next[i] = { ...next[i], ...patch };
@@ -444,11 +353,6 @@ function preprocessExpr(expr: string): string {
   const applyAndCompile = () => {
     // build system and compile expressions into math nodes
     buildSystem();
-    // compile each node with math.parse to detect errors
-    compiledRef.current = compiledRef.current.map((n, idx) => {
-      // compiledRef already holds nodes from buildSystem; keep them
-      return compiledRef.current[idx] ?? null;
-    });
     // reset history / time
     timeRef.current = 0;
     genHistoryRef.current = [];
@@ -616,18 +520,16 @@ function preprocessExpr(expr: string): string {
               )}
             </div>
             <div className="mt-2">
-              <div className="text-xs">微分方程式</div>
+              <div className="text-xs">微分方程式(右辺)</div>
               <textarea className="w-full rounded bg-slate-700 px-1 py-1 mt-1 text-sm" value={g.expr} onChange={(e) => updateVar(i, { expr: e.target.value })} rows={3} />
               <div className="mt-1 text-xs text-gray-300">
                 {(g.order ?? 1) === 0
-                  ? "これは定数（微分しません）"
-                  : (g.order ?? 1) === 1
-                  ? "微分方程式を入力してください。"
-                  : `微分方程式を入力してください。`
+                  ? "これは定数です。"
+                  : `d^${g.order}${renderVarName(g.name)}/dt^${g.order} = の右辺を入力してください。`
                 }<br />
-                ギリシャ文字は「theta」「omega」「gamma」などASCII綴りで入力できます（例: theta → θ, omega → ω）。<br />
+                {/* ギリシャ文字は「theta」「omega」「gamma」などASCII綴りで入力できます（例: theta → θ, omega → ω）。<br /> */}
                 式中では t、定数 eps0, mu0, k, g, G を使用可能。<br />
-                微分はアポストロフィで入力してください（例: theta' , theta''）。<br />
+                微分はアポストロフィで入力してください。<br />
               </div>
             </div>
           </div>
