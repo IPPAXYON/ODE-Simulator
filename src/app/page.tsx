@@ -5,6 +5,7 @@ import { Canvas } from "@react-three/fiber";
 import { Line, OrbitControls, Grid } from "@react-three/drei";
 import * as THREE from "three";
 import { create, all, MathNode } from "mathjs";
+import GraphView from "./GraphView";
 
 const math = create(all);
 
@@ -23,12 +24,15 @@ const DEFAULT_PARTICLE_COLOR = "#ff4d4d";
 
 export default function ODESimulatorCanvas(){
   // --- UI / variables ---
-  // 次元指定を削除。常にvars.lengthを使う。
   const [vars, setVars] = useState<GenVar[]>(() => [
     { name: "x", order: 1, initial: "1", expr: "10*(y-x)" },
     { name: "y", order: 1, initial: "0", expr: "x*(28-z)-y" },
     { name: "z", order: 1, initial: "0", expr: "x*y-8/3*z" },
   ]);
+
+  // --- View Control ---
+  const [view, setView] = useState<'simulator' | 'graph'>('simulator');
+  const [selectedVarIndex, setSelectedVarIndex] = useState<number | null>(null);
 
   // 軸表示・質点色・軌跡色
   const [showAxes, setShowAxes] = useState<boolean>(true);
@@ -56,8 +60,6 @@ export default function ODESimulatorCanvas(){
   const rafRef = useRef<number | null>(null);
 
   // helpers
-  // clampDim削除
-
 function renderVarName(name: string): string {
   return name;
 }
@@ -76,9 +78,11 @@ function preprocessExpr(expr: string): string {
     const expanded: string[] = [];
     newVars.forEach((g) => {
       const base = g.name || `x${expanded.length + 1}`;
-      expanded.push(base);
+      if (g.order > 0) {
+        expanded.push(base);
+      }
       for (let o = 1; o < (g.order || 0); o++) {
-        expanded.push(`${base}_${"d".repeat(o)}ot`);
+        expanded.push(`${base}_${'d'.repeat(o)}ot`);
       }
     });
     expandedVarNamesRef.current = expanded;
@@ -87,12 +91,12 @@ function preprocessExpr(expr: string): string {
     newVars.forEach((g) => {
       const base = g.name || `x${exprs.length + 1}`;
       if (g.order === 0) {
-        exprs.push("0");
+        // order 0 is a constant, no derivative
       } else if (g.order === 1) {
         exprs.push(preprocessExpr(g.expr) || "0");
       } else {
         for (let o = 1; o < g.order; o++) {
-          exprs.push(`${base}_${"d".repeat(o)}ot`);
+          exprs.push(`${base}_${'d'.repeat(o)}ot`);
         }
         exprs.push(preprocessExpr(g.expr) || "0");
       }
@@ -109,7 +113,7 @@ function preprocessExpr(expr: string): string {
     const state0: number[] = [];
     newVars.forEach((g) => {
       if (g.order === 0) {
-        state0.push(Number(g.initial) || 0);
+        // No state for order 0
         return;
       }
       for (let o = 0; o < g.order; o++) {
@@ -138,7 +142,6 @@ function preprocessExpr(expr: string): string {
   function compileExpression(expr: string): MathNode | null {
     if (!expr || expr.trim() === "") return null;
     try {
-      // parse but do not compile to function yet
       return math.parse(preprocessExpr(expr));
     } catch (err) {
       console.warn("parse error", expr, err);
@@ -146,13 +149,10 @@ function preprocessExpr(expr: string): string {
     }
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   function evaluateNode(node: MathNode | null, scope: Record<string, any>): number {
     if (!node) return 0;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const compiled = (node as any).compile ? (node as any).compile() : node;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const v = typeof compiled.evaluate === "function" ? compiled.evaluate(scope) : compiled(scope);
       if (typeof v === "number") return v;
       if (Array.isArray(v)) return v[0] ?? 0;
@@ -163,24 +163,18 @@ function preprocessExpr(expr: string): string {
     }
   }
 
-  // build f(y,t) from compiledRef and expandedVarNamesRef
   const evalDeriv = (y: number[], tNow: number) => {
     const expanded = expandedVarNamesRef.current;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const scope: Record<string, any> = { t: tNow };
-    // constants
-    // expose constants if needed; keep same as earlier
     scope.eps0 = 8.8541878128e-12;
     scope.mu0 = 4 * Math.PI * 1e-7;
     scope.k = 8.9875517923e9;
     scope.g = 9.80665;
     scope.G = 6.67430e-11;
 
-    // expose vars by name and var_dot names
     for (let i = 0; i < expanded.length; i++) {
       scope[expanded[i]] = y[i];
     }
-    // also map base names to their value (if both present, base is first occurrence)
     const baseMap: Record<string, number> = {};
     expanded.forEach((nm, i) => {
       const base = nm.split('_')[0];
@@ -188,13 +182,10 @@ function preprocessExpr(expr: string): string {
     });
     Object.entries(baseMap).forEach(([k, v]) => { scope[k] = v; });
 
-    // also provide helpers that reference particles if user wants (for compatibility)
     scope.dist = (i: number, j: number) => {
-      // compute from current particle positions (mapping variables to axes)
       const x = y[0] ?? 0;
       const yy = y[1] ?? 0;
-      // particle indexing uses 1-based like earlier computeDist? simple Euclidean with available dims
-      return Math.hypot(x - (i === 2 ? yy : 0), yy - (j === 2 ? y[1] : 0)); // simple placeholder (user likely won't use)
+      return Math.hypot(x - (i === 2 ? yy : 0), yy - (j === 2 ? y[1] : 0));
     };
     scope.dx = (_i: number, _j: number) => 0;
     scope.dy = (_i: number, _j: number) => 0;
@@ -210,7 +201,6 @@ function preprocessExpr(expr: string): string {
     return out;
   };
 
-  // RK4 step helper
   const addScaled = (a: number[], b: number[], scale: number) => a.map((v, i) => v + (b[i] ?? 0) * scale);
   const rk4 = (state: number[], h: number, tNow: number) => {
     const k1 = evalDeriv(state, tNow);
@@ -220,8 +210,7 @@ function preprocessExpr(expr: string): string {
     const k3 = evalDeriv(s2, tNow + h / 2);
     const s3 = addScaled(state, k3, h);
     const k4 = evalDeriv(s3, tNow + h);
-    const newState = state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
-    return newState;
+    return state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
   };
 
   useEffect(() => {
@@ -242,15 +231,12 @@ function preprocessExpr(expr: string): string {
       last = now;
       accumulated += elapsed * playbackSpeed;
 
-      // integrate in fixed dt steps
       const stepSize = dt;
       let steps = Math.floor(accumulated / stepSize);
       if (steps <= 0) return;
-      // cap steps to avoid spiral-of-death
       steps = Math.min(steps, 10);
 
       for (let s = 0; s < steps; s++) {
-        // perform one rk4 step
         const tNow = timeRef.current;
         const newState = rk4(stateRef.current, stepSize, tNow);
         stateRef.current = newState;
@@ -258,9 +244,7 @@ function preprocessExpr(expr: string): string {
         genHistoryRef.current.push({ time: timeRef.current, values: newState.slice() });
         if (genHistoryRef.current.length > 2000) genHistoryRef.current.shift();
 
-        // update particle position: map top N base variables to x,y,z
         const expanded = expandedVarNamesRef.current;
-        // base values: take first occurrence of base names in expanded order
         const baseVals: number[] = [];
         const seenBases = new Set<string>();
         for (let i = 0; i < expanded.length && baseVals.length < 3; i++) {
@@ -274,14 +258,11 @@ function preprocessExpr(expr: string): string {
         while (baseVals.length < 3) baseVals.push(0);
         setParticlePos([baseVals[0], baseVals[1], baseVals[2]]);
 
-        // update variable trails: each base variable has trail keyed by var name
         setVariableTrails(prev => {
-          if (!showTrail) { // 軌跡非表示の場合
-            return {}; // 全ての軌跡をクリア
+          if (!showTrail) {
+            return {};
           }
-
           const next = { ...prev };
-          // ensure using current vars (first vars.length bases)
           for (let i = 0; i < vars.length; i++) {
             const baseName = vars[i].name || `x${i+1}`;
             const key = `v:${baseName}`;
@@ -289,7 +270,7 @@ function preprocessExpr(expr: string): string {
             const pyv = baseVals[1] ?? 0;
             const pzv = baseVals[2] ?? 0;
             next[key] = [...(next[key] || []), { x: pxv, y: pyv, z: pzv }];
-            if (!isTrailInfinite && next[key].length > trailLength) { // 無限でない場合のみ制限
+            if (!isTrailInfinite && next[key].length > trailLength) {
               next[key] = next[key].slice(-trailLength);
             }
           }
@@ -306,10 +287,8 @@ function preprocessExpr(expr: string): string {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, dt, playbackSpeed, trailLength]);
+  }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, vars]);
 
-  // UI actions
   const toggleRunning = () => setRunning(r => !r);
 
   const resetAll = () => {
@@ -317,7 +296,6 @@ function preprocessExpr(expr: string): string {
     timeRef.current = 0;
     genHistoryRef.current = [];
     setVariableTrails({});
-    // reinitialize state from initials
     buildSystem();
     const s = stateRef.current;
     const px = s[0] ?? 0, py = s[1] ?? 0, pz = s[2] ?? 0;
@@ -326,7 +304,7 @@ function preprocessExpr(expr: string): string {
 
   const updateVar = (i: number, patch: Partial<GenVar>) => {
     if (typeof patch.expr === 'string') {
-      patch.expr = patch.expr.replace(/=/g, ''); // Remove all '='
+      patch.expr = patch.expr.replace(/=/g, '');
     }
     setVars(prev => {
       const next = prev.slice();
@@ -352,58 +330,68 @@ function preprocessExpr(expr: string): string {
   };
 
   const applyAndCompile = () => {
-    // build system and compile expressions into math nodes
     buildSystem();
-    // reset history / time
     timeRef.current = 0;
     genHistoryRef.current = [];
     setVariableTrails({});
-    // set initial particle pos
     const s = stateRef.current;
     setParticlePos([s[0] ?? 0, s[1] ?? 0, s[2] ?? 0]);
   };
 
-  // 色: ユーザー指定 or デフォルト
+  const showGraph = (index: number) => {
+    setSelectedVarIndex(index);
+    setView('graph');
+  };
+
+  const closeGraph = () => {
+    setView('simulator');
+    setSelectedVarIndex(null);
+  };
+
   const containerColor = () => particleColor || DEFAULT_PARTICLE_COLOR;
-  // 軌跡色: 質点色を透明度0.3で
   function trailColor(): string {
     const c = containerColor();
-    // HEX (#rrggbb) → rgba
     if (c.startsWith("#") && c.length === 7) {
       const r = parseInt(c.slice(1, 3), 16);
       const g = parseInt(c.slice(3, 5), 16);
       const b = parseInt(c.slice(5, 7), 16);
       return `rgba(${r},${g},${b},0.3)`;
     }
-    // fallback
     return c;
   }
   const variableUiColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
 
-  // AxesHelper component definition
   const AxesHelper = () => {
-    const length = 1000; // Represents "infinite" length
+    const length = 1000;
     if (!showAxes) return null;
     return (
       <>
-        {/* X-axis (Red) */}
         <Line points={[-length, 0, 0, length, 0, 0]} color={AXIS_COLORS[0]} lineWidth={2} />
-        {/* Y-axis (Green) */}
         <Line points={[0, -length, 0, 0, length, 0]} color={AXIS_COLORS[1]} lineWidth={2} />
-        {/* Z-axis (Blue) */}
         <Line points={[0, 0, -length, 0, 0, length]} color={AXIS_COLORS[2]} lineWidth={2} />
       </>
     );
   };
 
-  // Rendering JSX
+  if (view === 'graph') {
+    return (
+      <GraphView
+        historyData={genHistoryRef.current}
+        vars={vars}
+        expandedVarNames={expandedVarNamesRef.current}
+        selectedVarIndex={selectedVarIndex}
+        onClose={closeGraph}
+        dt={dt}
+      />
+    );
+  }
+
   return (
     <div className="flex gap-4 p-4 h-screen bg-slate-900 text-white">
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex items-center gap-2 mb-2 flex-wrap">
           <button className="px-3 py-1 rounded bg-green-500" onClick={toggleRunning}>{running ? "停止" : "再生"}</button>
           <button className="px-3 py-1 rounded bg-blue-500" onClick={resetAll}>リセット</button>
-          {/* 次元選択UI削除 */}
           <label className="text-sm">dt:
             <input className="ml-1 w-20 rounded bg-slate-700 text-white px-1" value={String(dt)} onChange={(e) => setDt(Number(e.target.value) || dt)} />
           </label>
@@ -414,21 +402,17 @@ function preprocessExpr(expr: string): string {
         </div>
 
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
-          {/* Canvas */}
           <Canvas camera={{ position: [6, 6, 6], fov: 50 }}>
             <color attach="background" args={['#0b1220']} />
             <hemisphereLight intensity={0.5} />
             <ambientLight intensity={0.3} />
             <pointLight position={[10, 10, 10]} intensity={0.6} />
             <Grid infiniteGrid fadeDistance={30} fadeStrength={5} />
-            {/* Axes helper */}
             <AxesHelper />
-            {/* Particle */}
             <mesh position={particlePos}>
               <sphereGeometry args={[0.2, 32, 32]} />
               <meshStandardMaterial color={containerColor()} />
             </mesh>
-            {/* variable trails */}
             {Object.entries(variableTrails).map(([key, trail]) => {
               if (!trail || trail.length < 2) return null;
               const points = trail.map(t => new THREE.Vector3(t.x, t.y, t.z));
@@ -468,7 +452,6 @@ function preprocessExpr(expr: string): string {
         </div>
       </div>
 
-      {/* Right panel: variable table */}
       <div className="w-2/5 flex flex-col gap-4 overflow-y-auto h-full pr-2">
         <div className="flex items-center gap-2">
           <button className="px-3 py-1 rounded bg-purple-600" onClick={addVariable} disabled={vars.length >= 3}>変数を追加</button>
@@ -482,6 +465,7 @@ function preprocessExpr(expr: string): string {
                 {`${i+1}. ${renderVarName(g.name || `var${i+1}`)}`}
               </strong>
               <div className="flex items-center gap-2">
+                <button className="bg-teal-600 px-2 py-0.5 rounded text-sm" onClick={() => showGraph(i)}>グラフ</button>
                 <label className="text-xs">階数:
                   <select
                     className="ml-1 bg-slate-700 rounded px-1"
