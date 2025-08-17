@@ -622,14 +622,13 @@ function preprocessExpr(expr: string): string {
                 {(g.order ?? 1) === 0
                   ? "これは定数（微分しません）"
                   : (g.order ?? 1) === 1
-                  ? "これは d/dt の右辺です（例: -y - z）"
-                  : `これは d${g.order}/dt${g.order} の右辺です（例: -sin(θ)）`
+                  ? "微分方程式を入力してください。"
+                  : `微分方程式を入力してください。`
                 }<br />
                 変数名は Unicode（θ, ω など）をそのまま使えます。<br />
                 また、ギリシャ文字は「theta」「omega」「gamma」などASCII綴りでも入力できます（例: theta → θ, omega → ω）。<br />
-                式中では他の変数名や t、定数 eps0, mu0, k, g, G を使用可。<br />
-                微分はアポストロフィで入力してください（例: theta' → θ˙, theta'' → θ¨）。<br />
-                <span className="text-yellow-400">全体式（例: theta'' = -0.2*theta'-1.5^2*sin(theta)+1.2*cos(0.9*t)）も入力可能です。</span>
+                式中では t、定数 eps0, mu0, k, g, G を使用可能。<br />
+                微分はアポストロフィで入力してください（例: theta' , theta''）。<br />
               </div>
             </div>
           </div>
