@@ -149,11 +149,21 @@ function preprocessExpr(expr: string): string {
     }
   }
 
-  function evaluateNode(node: MathNode | null, scope: Record<string, any>): number {
+  interface Scope {
+  t: number;
+  eps0: number;
+  mu0: number;
+  k: number;
+  g: number;
+  G: number;
+  [key: string]: number | ((...args: number[]) => number) | ((...args: number[]) => number[]);
+}
+
+  function evaluateNode(node: MathNode | null, scope: Scope): number {
     if (!node) return 0;
     try {
-      const compiled = (node as any).compile ? (node as any).compile() : node;
-      const v = typeof compiled.evaluate === "function" ? compiled.evaluate(scope) : compiled(scope);
+      const compiled = node.compile();
+      const v = compiled.evaluate(scope);
       if (typeof v === "number") return v;
       if (Array.isArray(v)) return v[0] ?? 0;
       return Number(v) || 0;
@@ -165,12 +175,14 @@ function preprocessExpr(expr: string): string {
 
   const evalDeriv = (y: number[], tNow: number) => {
     const expanded = expandedVarNamesRef.current;
-    const scope: Record<string, any> = { t: tNow };
-    scope.eps0 = 8.8541878128e-12;
-    scope.mu0 = 4 * Math.PI * 1e-7;
-    scope.k = 8.9875517923e9;
-    scope.g = 9.80665;
-    scope.G = 6.67430e-11;
+    const scope: Scope = {
+      t: tNow,
+      eps0: 8.8541878128e-12,
+      mu0: 4 * Math.PI * 1e-7,
+            k: 8.9875517923e9,
+      g: 9.80665,
+      G: 6.67430e-11,
+    };
 
     for (let i = 0; i < expanded.length; i++) {
       scope[expanded[i]] = y[i];

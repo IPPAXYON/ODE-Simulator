@@ -95,7 +95,7 @@ export default function GraphView({
 
   // Helper for numerical differentiation
   const calculateDerivative = (data: number[], timeSteps: number[]): number[] => {
-    if (data.length < 2) return data.map(() => 0);
+    if (data.length < 2) return data.map(() => 0); // Not enough data points
 
     const derivative: number[] = [];
 
