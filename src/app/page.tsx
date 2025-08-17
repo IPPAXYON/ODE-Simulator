@@ -411,7 +411,6 @@ function preprocessExpr(expr: string): string {
             <input type="range" min="0.1" max="5" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(Number(e.target.value))} className="mx-2" />
             <span>{playbackSpeed.toFixed(1)}x</span>
           </label>
-          <button className="ml-auto bg-indigo-600 px-2 py-1 rounded" onClick={applyAndCompile}>式を適用</button>
         </div>
 
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
