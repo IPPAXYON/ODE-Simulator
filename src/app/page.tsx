@@ -19,7 +19,7 @@ type GenVar = {
 
 const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
 // デフォルト色
-const DEFAULT_PARTICLE_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"];
+const DEFAULT_PARTICLE_COLOR = "#ff4d4d";
 
 export default function ODESimulatorCanvas(): JSX.Element {
   // --- UI / variables ---
@@ -32,11 +32,9 @@ export default function ODESimulatorCanvas(): JSX.Element {
 
   // 軸表示・質点色・軌跡色
   const [showAxes, setShowAxes] = useState<boolean>(true);
-  const [particleColors, setParticleColors] = useState<string[]>([
-    DEFAULT_PARTICLE_COLORS[0],
-    DEFAULT_PARTICLE_COLORS[1],
-    DEFAULT_PARTICLE_COLORS[2],
-  ]);
+  const [particleColor, setParticleColor] = useState<string>(
+    DEFAULT_PARTICLE_COLOR
+  );
 
   const [running, setRunning] = useState(false);
   const [dt, setDt] = useState<number>(0.01);
@@ -79,7 +77,7 @@ function preprocessExpr(expr: string): string {
   if (!expr) return expr;
   // まずギリシャ文字ASCIIをUnicode変換
   for (const [key, val] of Object.entries(greekMap)) {
-    expr = expr.replace(new RegExp(`\\b${key}\\b`, "g"), val);
+    expr = expr.replace(new RegExp(`\b${key}\b`, "g"), val);
   }
   // アポストロフィ微分を高階から順に変換
   expr = expr
@@ -461,10 +459,10 @@ function preprocessExpr(expr: string): string {
   };
 
   // 色: ユーザー指定 or デフォルト
-  const containerColor = (index: number) => particleColors[index] || DEFAULT_PARTICLE_COLORS[index % DEFAULT_PARTICLE_COLORS.length];
+  const containerColor = () => particleColor || DEFAULT_PARTICLE_COLOR;
   // 軌跡色: 質点色を透明度0.3で
-  function trailColor(index: number): string {
-    const c = containerColor(index);
+  function trailColor(): string {
+    const c = containerColor();
     // HEX (#rrggbb) → rgba
     if (c.startsWith("#") && c.length === 7) {
       const r = parseInt(c.slice(1, 3), 16);
@@ -475,6 +473,7 @@ function preprocessExpr(expr: string): string {
     // fallback
     return c;
   }
+  const variableUiColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
 
   // AxesHelper component definition
   const AxesHelper = () => {
@@ -521,20 +520,15 @@ function preprocessExpr(expr: string): string {
             {/* Axes helper */}
             <AxesHelper />
             {/* Particle */}
-            {vars.slice(0, 3).map((g, i) => (
-              <mesh key={i} position={particlePos}>
-                <sphereGeometry args={[0.2, 32, 32]} />
-                <meshStandardMaterial color={containerColor(i)} />
-              </mesh>
-            ))}
+            <mesh position={particlePos}>
+              <sphereGeometry args={[0.2, 32, 32]} />
+              <meshStandardMaterial color={containerColor()} />
+            </mesh>
             {/* variable trails */}
             {Object.entries(variableTrails).map(([key, trail]) => {
               if (!trail || trail.length < 2) return null;
               const points = trail.map(t => new THREE.Vector3(t.x, t.y, t.z));
-              const varName = key.slice(2);
-              // pick color from var index
-              const idx = Math.max(0, vars.findIndex(v => v.name === varName));
-              const col = trailColor(idx);
+              const col = trailColor();
               return <Line key={key} points={points} lineWidth={2} color={col} />;
             })}
             <OrbitControls />
@@ -567,11 +561,21 @@ function preprocessExpr(expr: string): string {
           <button className="px-3 py-1 rounded bg-purple-600" onClick={addVariable} disabled={vars.length >= 3}>変数を追加</button>
           <div className="text-xs text-gray-300">（上から順に 赤, 緑, 青 軸に対応）</div>
         </div>
+        <div className="border border-slate-700 rounded p-3">
+          <div className="text-xs">質点色</div>
+          <input
+            type="color"
+            className="w-8 h-8 rounded bg-transparent border-0 p-0"
+            value={particleColor}
+            onChange={e => setParticleColor(e.target.value)}
+            style={{ background: "transparent" }}
+          />
+        </div>
 
         {vars.slice(0, 3).map((g, i) => (
-          <div key={i} className="border border-slate-700 rounded p-3" style={{ background: containerColor(i) + "22" }}>
+          <div key={i} className="border border-slate-700 rounded p-3" style={{ background: variableUiColor(i) + "22" }}>
             <div className="flex items-center justify-between">
-              <strong style={{ color: containerColor(i) }}>
+              <strong style={{ color: variableUiColor(i) }}>
                 {`${i+1}. ${renderVarName(g.name || `var${i+1}`)}`}
               </strong>
               <div className="flex items-center gap-2">
@@ -611,20 +615,6 @@ function preprocessExpr(expr: string): string {
                   <input className="w-full rounded bg-slate-700 px-1" value={g.initialDDot ?? ""} onChange={(e) => updateVar(i, { initialDDot: e.target.value })} />
                 </div>
               )}
-              <div>
-                <div className="text-xs">質点色</div>
-                <input
-                  type="color"
-                  className="w-8 h-8 rounded bg-transparent border-0 p-0"
-                  value={particleColors[i] || DEFAULT_PARTICLE_COLORS[i]}
-                  onChange={e => {
-                    const newColors = particleColors.slice();
-                    newColors[i] = e.target.value;
-                    setParticleColors(newColors);
-                  }}
-                  style={{ background: "transparent" }}
-                />
-              </div>
             </div>
             <div className="mt-2">
               <div className="text-xs">微分方程式</div>
