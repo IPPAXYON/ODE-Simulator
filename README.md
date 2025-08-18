@@ -1,37 +1,46 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+アプリの概要
 
-## Getting Started
+このアプリは、ユーザーが入力した常微分方程式をリアルタイムでシミュレーションし、その解を3D空間の軌跡やグラフで可視化する無料のWebツールです。物理学、数学、工学分野の学習者や研究者が、非線形振動やカオスといった複雑な現象を直感的に理解する手助けをすることを目的に開発しました。
 
-First, run the development server:
+主な特徴
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+直感的な操作性: ブラウザ上で直接微分方程式を入力するだけで、すぐにシミュレーションを開始できます。複雑な設定は必要ありません。
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+多様な方程式に対応: van der Pol振動子、Lorenz方程式、Duffing振動子など、様々な常微分方程式を自由に入力して試すことができます。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+3D軌跡: 状態変数の時間変化を3次元空間の軌跡として描画し、アトラクターの形状などを視覚的に捉えられます。
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+時間変化グラフ: 好きな変数ととその時間微分の値を時系列で表示し、詳細な挙動を分析できます。
 
-## Learn More
+教育的・研究的価値: 非線形力学系やカオス理論を学ぶための強力なツールであり、新たな方程式モデルのプロトタイピングにも活用できます。
 
-To learn more about Next.js, take a look at the following resources:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+使い方
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+微分方程式を入力: 画面左側の入力欄に、1階常微分方程式系を入力します。例えば、dx/dtの式をeq_xに、dy/dtの式をeq_yに記述します。
 
-## Deploy on Vercel
+例：ローレンツ方程式の場合
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+10 * (y - x)
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# -
+x * (28 - z) - y
+
+x * y - (8/3) * z
+
+初期値を設定: 入力欄で、各変数の初期値を設定します。
+
+シミュレーションを開始: 「式を適用」，「実行」ボタンをクリックすると，リアルタイムでシミュレーションが始まります。
+
+グラフを切り替え: 「グラフ」ボタンを押すと，画面が切り替わり，グラフを見ることができます。
+
+対応する数式表現
+
+四則演算: +, -, *, /
+
+累乗: x^2 
+
+数学関数: sin(), cos(), tan(), exp(), log(), sqrt() など
+
+時間微分: x' のように，アポストロフィーで入力
+
+ギリシャ文字:「theta」「omega」「gamma」などASCII綴りで入力できます（例: theta → θ, omega → ω）。
