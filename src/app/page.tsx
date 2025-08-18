@@ -47,6 +47,11 @@ export default function ODESimulatorCanvas() {
   const [view, setView] = useState<"simulator" | "graph">("simulator");
   const [selectedVarIndex, setSelectedVarIndex] = useState<number | null>(null);
 
+  // ===== Display mode & phase config =====
+  const [displayMode, setDisplayMode] = useState<"particle" | "phase">("particle");
+  // phaseConfig: { [particleId]: {x: string, y: string, z?: string} }
+  const [phaseConfig, setPhaseConfig] = useState<Record<number, {x: string, y: string, z?: string}>>({});
+
   // 軸表示・軌跡関連
   const [showAxes, setShowAxes] = useState<boolean>(true);
   const [running, setRunning] = useState(false);
@@ -279,20 +284,43 @@ export default function ODESimulatorCanvas() {
         genHistoryRef.current.push({ time: timeRef.current, values: newState.slice() });
         if (genHistoryRef.current.length > 2000) genHistoryRef.current.shift();
 
-        // 粒子ごとの現在位置を更新（各粒子の最初の3基底変数）
+        // 粒子ごとの現在位置を更新
         const newPositions: Record<number, [number, number, number]> = {};
-        let idx = 0;
-        particles.forEach((p) => {
-          const vals: number[] = [];
-          p.vars.slice(0, 3).forEach((g) => {
-            if (g.order > 0) {
-              vals.push(stateRef.current[idx] ?? 0);
-              idx += g.order;
+        if (displayMode === "particle") {
+          let idx = 0;
+          particles.forEach((p) => {
+            const vals: number[] = [];
+            p.vars.slice(0, 3).forEach((g) => {
+              if (g.order > 0) {
+                vals.push(stateRef.current[idx] ?? 0);
+                idx += g.order;
+              }
+            });
+            while (vals.length < 3) vals.push(0);
+            newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+          });
+        } else {
+          particles.forEach((p) => {
+            const config = phaseConfig[p.id];
+            if (config?.x && config?.y && config?.z) {
+              const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+              const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+              const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
+              const vx = stateRef.current[idxX] ?? 0;
+              const vy = stateRef.current[idxY] ?? 0;
+              const vz = stateRef.current[idxZ] ?? 0;
+              newPositions[p.id] = [vx, vy, vz];
+            } else if (config?.x && config?.y) {
+              const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+              const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+              const vx = stateRef.current[idxX] ?? 0;
+              const vy = stateRef.current[idxY] ?? 0;
+              newPositions[p.id] = [vx, vy, 0];
+            } else {
+              newPositions[p.id] = [0, 0, 0];
             }
           });
-          while (vals.length < 3) vals.push(0);
-          newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-        });
+        }
         setParticlePos(newPositions);
 
         // 軌跡
@@ -333,18 +361,41 @@ export default function ODESimulatorCanvas() {
     // 初期位置の設定
     const s = stateRef.current;
     const newPositions: Record<number, [number, number, number]> = {};
-    let idx = 0;
-    particles.forEach((p) => {
-      const vals: number[] = [];
-      p.vars.slice(0, 3).forEach((g) => {
-        if (g.order > 0) {
-          vals.push(s[idx] ?? 0);
-          idx += g.order;
+    if (displayMode === "particle") {
+      let idx = 0;
+      particles.forEach((p) => {
+        const vals: number[] = [];
+        p.vars.slice(0, 3).forEach((g) => {
+          if (g.order > 0) {
+            vals.push(s[idx] ?? 0);
+            idx += g.order;
+          }
+        });
+        while (vals.length < 3) vals.push(0);
+        newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+      });
+    } else {
+      particles.forEach((p) => {
+        const config = phaseConfig[p.id];
+        if (config?.x && config?.y && config?.z) {
+          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+          const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
+          const vx = s[idxX] ?? 0;
+          const vy = s[idxY] ?? 0;
+          const vz = s[idxZ] ?? 0;
+          newPositions[p.id] = [vx, vy, vz];
+        } else if (config?.x && config?.y) {
+          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+          const vx = s[idxX] ?? 0;
+          const vy = s[idxY] ?? 0;
+          newPositions[p.id] = [vx, vy, 0];
+        } else {
+          newPositions[p.id] = [0, 0, 0];
         }
       });
-      while (vals.length < 3) vals.push(0);
-      newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-    });
+    }
     setParticlePos(newPositions);
   };
 
@@ -356,18 +407,41 @@ export default function ODESimulatorCanvas() {
 
     const s = stateRef.current;
     const newPositions: Record<number, [number, number, number]> = {};
-    let idx = 0;
-    particles.forEach((p) => {
-      const vals: number[] = [];
-      p.vars.slice(0, 3).forEach((g) => {
-        if (g.order > 0) {
-          vals.push(s[idx] ?? 0);
-          idx += g.order;
+    if (displayMode === "particle") {
+      let idx = 0;
+      particles.forEach((p) => {
+        const vals: number[] = [];
+        p.vars.slice(0, 3).forEach((g) => {
+          if (g.order > 0) {
+            vals.push(s[idx] ?? 0);
+            idx += g.order;
+          }
+        });
+        while (vals.length < 3) vals.push(0);
+        newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+      });
+    } else {
+      particles.forEach((p) => {
+        const config = phaseConfig[p.id];
+        if (config?.x && config?.y && config?.z) {
+          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+          const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
+          const vx = s[idxX] ?? 0;
+          const vy = s[idxY] ?? 0;
+          const vz = s[idxZ] ?? 0;
+          newPositions[p.id] = [vx, vy, vz];
+        } else if (config?.x && config?.y) {
+          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+          const vx = s[idxX] ?? 0;
+          const vy = s[idxY] ?? 0;
+          newPositions[p.id] = [vx, vy, 0];
+        } else {
+          newPositions[p.id] = [0, 0, 0];
         }
       });
-      while (vals.length < 3) vals.push(0);
-      newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-    });
+    }
     setParticlePos(newPositions);
   };
 
@@ -489,6 +563,16 @@ export default function ODESimulatorCanvas() {
               className="mx-2"
             />
             <span>{playbackSpeed.toFixed(1)}x</span>
+          </label>
+          <label className="text-sm">
+            表示:
+            <select className="ml-1 bg-slate-700 rounded px-1"
+              value={displayMode}
+              onChange={e => setDisplayMode(e.target.value as "particle" | "phase")}
+            >
+              <option value="particle">質点運動</option>
+              <option value="phase">相空間</option>
+            </select>
           </label>
         </div>
 
@@ -652,6 +736,84 @@ export default function ODESimulatorCanvas() {
           </div>
         ))}
 
+        {/* Phase space axis selection */}
+        {displayMode === "phase" && activeParticle && (
+          <div className="text-xs mt-2">
+            <div>相空間軸選択:</div>
+            <div className="flex gap-2 mt-1">
+              <select
+                value={phaseConfig[activeParticle.id]?.x || ""}
+                onChange={e =>
+                  setPhaseConfig(prev => ({
+                    ...prev,
+                    [activeParticle.id]: {
+                      ...(prev[activeParticle.id] || {}),
+                      x: e.target.value,
+                    },
+                  }))
+                }
+                className="bg-slate-700 rounded px-1"
+              >
+                <option value="">未選択</option>
+                {activeParticle.vars.map(v => (
+                  <React.Fragment key={v.name}>
+                    <option value={v.name}>{v.name}</option>
+                    <option value={`${v.name}_dot`}>{`${v.name}'`}</option>
+                    <option value={`${v.name}_ddot`}>{`${v.name}''`}</option>
+                    <option value={`${v.name}_dddot`}>{`${v.name}'''`}</option>
+                  </React.Fragment>
+                ))}
+              </select>
+              <select
+                value={phaseConfig[activeParticle.id]?.y || ""}
+                onChange={e =>
+                  setPhaseConfig(prev => ({
+                    ...prev,
+                    [activeParticle.id]: {
+                      ...(prev[activeParticle.id] || {}),
+                      y: e.target.value,
+                    },
+                  }))
+                }
+                className="bg-slate-700 rounded px-1"
+              >
+                <option value="">未選択</option>
+                {activeParticle.vars.map(v => (
+                  <React.Fragment key={v.name}>
+                    <option value={v.name}>{v.name}</option>
+                    <option value={`${v.name}_dot`}>{`${v.name}'`}</option>
+                    <option value={`${v.name}_ddot`}>{`${v.name}''`}</option>
+                    <option value={`${v.name}_dddot`}>{`${v.name}'''`}</option>
+                  </React.Fragment>
+                ))}
+              </select>
+              <select
+                value={phaseConfig[activeParticle.id]?.z || ""}
+                onChange={e =>
+                  setPhaseConfig(prev => ({
+                    ...prev,
+                    [activeParticle.id]: {
+                      ...(prev[activeParticle.id] || {}),
+                      z: e.target.value,
+                    },
+                  }))
+                }
+                className="bg-slate-700 rounded px-1"
+              >
+                <option value="">未選択</option>
+                {activeParticle.vars.map(v => (
+                  <React.Fragment key={v.name}>
+                    <option value={v.name}>{v.name}</option>
+                    <option value={`${v.name}_dot`}>{`${v.name}'`}</option>
+                    <option value={`${v.name}_ddot`}>{`${v.name}''`}</option>
+                    <option value={`${v.name}_dddot`}>{`${v.name}'''`}</option>
+                  </React.Fragment>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
         <div className="mt-2 flex gap-2">
           <button className="bg-indigo-600 px-3 py-1 rounded" onClick={applyAndCompile}>初期値・式を適用</button>
           <button
@@ -660,18 +822,41 @@ export default function ODESimulatorCanvas() {
               buildSystem();
               const s = stateRef.current;
               const newPositions: Record<number, [number, number, number]> = {};
-              let idx = 0;
-              particles.forEach((p) => {
-                const vals: number[] = [];
-                p.vars.slice(0, 3).forEach((g) => {
-                  if (g.order > 0) {
-                    vals.push(s[idx] ?? 0);
-                    idx += g.order;
+              if (displayMode === "particle") {
+                let idx = 0;
+                particles.forEach((p) => {
+                  const vals: number[] = [];
+                  p.vars.slice(0, 3).forEach((g) => {
+                    if (g.order > 0) {
+                      vals.push(s[idx] ?? 0);
+                      idx += g.order;
+                    }
+                  });
+                  while (vals.length < 3) vals.push(0);
+                  newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+                });
+              } else {
+                particles.forEach((p) => {
+                  const config = phaseConfig[p.id];
+                  if (config?.x && config?.y && config?.z) {
+                    const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+                    const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+                    const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
+                    const vx = s[idxX] ?? 0;
+                    const vy = s[idxY] ?? 0;
+                    const vz = s[idxZ] ?? 0;
+                    newPositions[p.id] = [vx, vy, vz];
+                  } else if (config?.x && config?.y) {
+                    const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
+                    const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
+                    const vx = s[idxX] ?? 0;
+                    const vy = s[idxY] ?? 0;
+                    newPositions[p.id] = [vx, vy, 0];
+                  } else {
+                    newPositions[p.id] = [0, 0, 0];
                   }
                 });
-                while (vals.length < 3) vals.push(0);
-                newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-              });
+              }
               setParticlePos(newPositions);
             }}
           >
