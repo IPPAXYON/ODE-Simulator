@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useMemo } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Line, OrbitControls, Grid } from "@react-three/drei";
 import * as THREE from "three";
@@ -9,136 +9,75 @@ import GraphView from "./GraphView";
 
 const math = create(all);
 
+// ===== Types =====
 type GenVar = {
-  name: string;             // ユーザー変数名 (Unicode可)
-  order: number;            // 階数 (0, 1, 2 など)
-  initial: string;          // 初期値
-  initialDot?: string;      // 初期速度 (1階以上で有効)
-  initialDDot?: string;     // 初期加速度 (2階以上で有効)
-  expr: string;             // d^order/dt^order の右辺
+  name: string; // ユーザー変数名 (Unicode可)
+  order: number; // 階数 (0, 1, 2 など)
+  initial: string; // 初期値
+  initialDot?: string; // 初期速度 (1階以上で有効)
+  initialDDot?: string; // 初期加速度 (2階以上で有効)
+  expr: string; // d^order/dt^order の右辺
+};
+
+type Particle = {
+  id: number;
+  color: string;
+  vars: GenVar[]; // 上限3
 };
 
 const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
-// デフォルト色
 const DEFAULT_PARTICLE_COLOR = "#ff4d4d";
 
-export default function ODESimulatorCanvas(){
-  // --- UI / variables ---
-  const [vars, setVars] = useState<GenVar[]>(() => [
-    { name: "x", order: 1, initial: "1", expr: "10*(y-x)" },
-    { name: "y", order: 1, initial: "0", expr: "x*(28-z)-y" },
-    { name: "z", order: 1, initial: "0", expr: "x*y-8/3*z" },
+export default function ODESimulatorCanvas() {
+  // ===== Particles state =====
+  const [particles, setParticles] = useState<Particle[]>(() => [
+    {
+      id: 1,
+      color: DEFAULT_PARTICLE_COLOR,
+      vars: [
+        { name: "x", order: 1, initial: "1", expr: "10*(y-x)" },
+        { name: "y", order: 1, initial: "0", expr: "x*(28-z)-y" },
+        { name: "z", order: 1, initial: "0", expr: "x*y-8/3*z" },
+      ],
+    },
   ]);
+  const [activePid, setActivePid] = useState<number>(1);
 
-  // --- View Control ---
-  const [view, setView] = useState<'simulator' | 'graph'>('simulator');
+  // ===== View Control =====
+  const [view, setView] = useState<"simulator" | "graph">("simulator");
   const [selectedVarIndex, setSelectedVarIndex] = useState<number | null>(null);
 
-  // 軸表示・質点色・軌跡色
+  // 軸表示・軌跡関連
   const [showAxes, setShowAxes] = useState<boolean>(true);
-  const [particleColor, setParticleColor] = useState<string>(
-    DEFAULT_PARTICLE_COLOR
-  );
-
   const [running, setRunning] = useState(false);
   const [dt, setDt] = useState<number>(0.01);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1);
   const [trailLength, setTrailLength] = useState<number>(500);
-  const [isTrailInfinite, setIsTrailInfinite] = useState<boolean>(true); // default infinite
-  const [showTrail, setShowTrail] = useState<boolean>(true); // toggle on/off
+  const [isTrailInfinite, setIsTrailInfinite] = useState<boolean>(true);
+  const [showTrail, setShowTrail] = useState<boolean>(true);
 
-  // compiled mathjs nodes for RHS
+  // ===== Numeric engine refs =====
   const compiledRef = useRef<(MathNode | null)[]>([]);
-  const expandedVarNamesRef = useRef<string[]>([]); // expanded state variable names (e.g. x, x_dot, y, ...)
-  const stateRef = useRef<number[]>([]); // numeric state vector matching expandedVarNamesRef
+  const exprParticleIdsRef = useRef<number[]>([]); // 各式がどの粒子に属するか
+  const expandedVarNamesRef = useRef<string[]>([]); // 例: p1_x, p1_x_dot, p2_y, ...
+  const nameToIndexRef = useRef<Record<string, number>>({});
+  const stateRef = useRef<number[]>([]);
   const genHistoryRef = useRef<{ time: number; values: number[] }[]>([]);
   const timeRef = useRef<number>(0);
 
-  // For rendering:
-  const [particlePos, setParticlePos] = useState<[number, number, number]>([0, 0, 0]);
-  const [variableTrails, setVariableTrails] = useState<Record<string, { x: number; y: number; z: number }[]>>({});
+  // ===== Render state =====
+  const [particlePos, setParticlePos] = useState<Record<number, [number, number, number]>>({});
+  const [trails, setTrails] = useState<Record<number, { x: number; y: number; z: number }[]>>({});
   const rafRef = useRef<number | null>(null);
 
-  // helpers
-function renderVarName(name: string): string {
-  return name;
-}
-
-function preprocessExpr(expr: string): string {
-  if (!expr) return expr;
-  return expr
-    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'''/g, "$1_dddot") // 3階
-    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)''/g, "$1_ddot")   // 2階
-    .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'/g, "$1_dot");   // 1階
-}
-
-  const buildSystem = () => {
-    const newVars = vars.map(v => ({ ...v }));
-
-    const expanded: string[] = [];
-    newVars.forEach((g) => {
-      const base = g.name || `x${expanded.length + 1}`;
-      if (g.order > 0) {
-        expanded.push(base);
-      }
-      for (let o = 1; o < (g.order || 0); o++) {
-        expanded.push(`${base}_${'d'.repeat(o)}ot`);
-      }
-    });
-    expandedVarNamesRef.current = expanded;
-
-    const exprs: string[] = [];
-    newVars.forEach((g) => {
-      const base = g.name || `x${exprs.length + 1}`;
-      if (g.order === 0) {
-        // order 0 is a constant, no derivative
-      } else if (g.order === 1) {
-        exprs.push(preprocessExpr(g.expr) || "0");
-      } else {
-        for (let o = 1; o < g.order; o++) {
-          exprs.push(`${base}_${'d'.repeat(o)}ot`);
-        }
-        exprs.push(preprocessExpr(g.expr) || "0");
-      }
-    });
-
-    compiledRef.current = exprs.map(e => {
-      try {
-        return compileExpression(e);
-      } catch {
-        return null;
-      }
-    });
-
-    const state0: number[] = [];
-    newVars.forEach((g) => {
-      if (g.order === 0) {
-        // No state for order 0
-        return;
-      }
-      for (let o = 0; o < g.order; o++) {
-        if (o === 0) state0.push(Number(g.initial) || 0);
-        else if (o === 1) state0.push(Number(g.initialDot) || 0);
-        else if (o === 2) state0.push(Number(g.initialDDot) || 0);
-        else state0.push(0);
-      }
-    });
-
-    if (genHistoryRef.current.length > 0) {
-      const last = genHistoryRef.current[genHistoryRef.current.length - 1];
-      if (Math.abs(last.time - timeRef.current) < 1e-12) {
-        stateRef.current = [...last.values];
-      } else if (last.time <= timeRef.current) {
-        stateRef.current = last.values.slice(0, state0.length).concat(state0.slice(last.values.length));
-      } else {
-        stateRef.current = state0;
-      }
-    } else {
-      stateRef.current = state0;
-    }
-  };
-
-  // compile helper
+  // ===== Helpers =====
+  function preprocessExpr(expr: string): string {
+    if (!expr) return expr;
+    return expr
+      .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'''/g, "$1_dddot")
+      .replace(/([a-zA-Z_][a-zA-Z0-9_]*)''/g, "$1_ddot")
+      .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'/g, "$1_dot");
+  }
   function compileExpression(expr: string): MathNode | null {
     if (!expr || expr.trim() === "") return null;
     try {
@@ -149,15 +88,85 @@ function preprocessExpr(expr: string): string {
     }
   }
 
+  // UI util
+  const activeParticle = useMemo(() => particles.find(p => p.id === activePid) ?? particles[0], [particles, activePid]);
+  const variableUiColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
+
+  // ===== System builder =====
+  const buildSystem = () => {
+    const expanded: string[] = [];
+    const exprs: string[] = [];
+    const exprPids: number[] = [];
+    const state0: number[] = [];
+
+    // 変数展開（prefix: p{id}_）
+    particles.forEach((p) => {
+      p.vars.slice(0, 3).forEach((g) => {
+        const base = `p${p.id}_${g.name || "x"}`;
+        if (g.order > 0) expanded.push(base);
+        for (let o = 1; o < (g.order || 0); o++) {
+          expanded.push(`${base}_${"d".repeat(o)}ot`);
+        }
+      });
+    });
+    expandedVarNamesRef.current = expanded;
+
+    // 式の並び（高階は連立1階に展開: x_dot = v, v_dot = f など）
+    particles.forEach((p) => {
+      p.vars.slice(0, 3).forEach((g) => {
+        const base = `p${p.id}_${g.name || "x"}`;
+        if (g.order === 0) {
+          // 定数は微分なし
+        } else if (g.order === 1) {
+          exprs.push(preprocessExpr(g.expr) || "0");
+          exprPids.push(p.id);
+        } else {
+          // 1階〜(order-1)階は"その次の導関数"に等しい形
+          for (let o = 1; o < g.order; o++) {
+            exprs.push(`${base}_${"d".repeat(o)}ot`);
+            exprPids.push(p.id);
+          }
+          // 最後に与えられた右辺
+          exprs.push(preprocessExpr(g.expr) || "0");
+          exprPids.push(p.id);
+        }
+      });
+    });
+
+    compiledRef.current = exprs.map((e) => compileExpression(e));
+    exprParticleIdsRef.current = exprPids;
+
+    // 初期状態ベクトル
+    const s0: number[] = [];
+    particles.forEach((p) => {
+      p.vars.slice(0, 3).forEach((g) => {
+        if (g.order === 0) return;
+        for (let o = 0; o < g.order; o++) {
+          if (o === 0) s0.push(Number(g.initial) || 0);
+          else if (o === 1) s0.push(Number(g.initialDot) || 0);
+          else if (o === 2) s0.push(Number(g.initialDDot) || 0);
+          else s0.push(0);
+        }
+      });
+    });
+    stateRef.current = s0;
+
+    // name -> index マップ
+    const map: Record<string, number> = {};
+    expanded.forEach((nm, i) => { map[nm] = i; });
+    nameToIndexRef.current = map;
+  };
+
+  // ===== Evaluator =====
   interface Scope {
-  t: number;
-  eps0: number;
-  mu0: number;
-  k: number;
-  g: number;
-  G: number;
-  [key: string]: number | ((...args: number[]) => number) | ((...args: number[]) => number[]);
-}
+    t: number;
+    eps0: number;
+    mu0: number;
+    k: number;
+    g: number;
+    G: number;
+    [key: string]: number | ((...args: number[]) => number) | ((...args: number[]) => number[]);
+  }
 
   function evaluateNode(node: MathNode | null, scope: Scope): number {
     if (!node) return 0;
@@ -175,44 +184,57 @@ function preprocessExpr(expr: string): string {
 
   const evalDeriv = (y: number[], tNow: number) => {
     const expanded = expandedVarNamesRef.current;
-    const scope: Scope = {
+    const scopeBase: Scope = {
       t: tNow,
       eps0: 8.8541878128e-12,
       mu0: 4 * Math.PI * 1e-7,
-            k: 8.9875517923e9,
+      k: 8.9875517923e9,
       g: 9.80665,
       G: 6.67430e-11,
     };
 
-    for (let i = 0; i < expanded.length; i++) {
-      scope[expanded[i]] = y[i];
-    }
-    const baseMap: Record<string, number> = {};
-    expanded.forEach((nm, i) => {
-      const base = nm.split('_')[0];
-      if (baseMap[base] === undefined) baseMap[base] = y[i];
-    });
-    Object.entries(baseMap).forEach(([k, v]) => { scope[k] = v; });
+    // すべての展開名をスコープに入れる（p{id}_x など）
+    for (let i = 0; i < expanded.length; i++) scopeBase[expanded[i]] = y[i];
 
-    scope.dist = (i: number, j: number) => {
-      const x = y[0] ?? 0;
-      const yy = y[1] ?? 0;
-      return Math.hypot(x - (i === 2 ? yy : 0), yy - (j === 2 ? y[1] : 0));
+    // ユーティリティ（必要に応じて拡張）
+    scopeBase.dist = (i: number, j: number) => {
+      const pi = particles[i] ?? particles[0];
+      const pj = particles[j] ?? particles[0];
+      const ppos = (pid: number) => particlePos[pid] || [0, 0, 0];
+      const a = ppos(pi?.id ?? 0), b = ppos(pj?.id ?? 0);
+      return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
     };
-    scope.dx = (_i: number, _j: number) => 0;
-    scope.dy = (_i: number, _j: number) => 0;
-    scope.dz = (_i: number, _j: number) => 0;
-    scope.rvec = (_i: number, _j: number) => [0,0,0];
 
     const out: number[] = [];
     for (let i = 0; i < compiledRef.current.length; i++) {
       const node = compiledRef.current[i];
-      const v = evaluateNode(node, scope);
+      const pid = exprParticleIdsRef.current[i];
+
+      // 粒子ごとローカル名エイリアス（x, y, z, x_dot など）
+      const localScope: Scope = { ...scopeBase };
+      const p = particles.find((pp) => pp.id === pid);
+      if (p) {
+        p.vars.slice(0, 3).forEach((g) => {
+          const base = `p${p.id}_${g.name}`;
+          const idx0 = nameToIndexRef.current[base];
+          if (idx0 != null) localScope[g.name] = y[idx0];
+          // 導関数も解決
+          const d1 = nameToIndexRef.current[`${base}_dot`];
+          if (d1 != null) localScope[`${g.name}_dot`] = y[d1];
+          const d2 = nameToIndexRef.current[`${base}_ddot`];
+          if (d2 != null) localScope[`${g.name}_ddot`] = y[d2];
+          const d3 = nameToIndexRef.current[`${base}_dddot`];
+          if (d3 != null) localScope[`${g.name}_dddot`] = y[d3];
+        });
+      }
+
+      const v = evaluateNode(node, localScope);
       out.push(v);
     }
     return out;
   };
 
+  // ===== Integrator =====
   const addScaled = (a: number[], b: number[], scale: number) => a.map((v, i) => v + (b[i] ?? 0) * scale);
   const rk4 = (state: number[], h: number, tNow: number) => {
     const k1 = evalDeriv(state, tNow);
@@ -225,6 +247,7 @@ function preprocessExpr(expr: string): string {
     return state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
   };
 
+  // ===== Main loop =====
   useEffect(() => {
     if (!running) {
       if (rafRef.current) {
@@ -256,36 +279,33 @@ function preprocessExpr(expr: string): string {
         genHistoryRef.current.push({ time: timeRef.current, values: newState.slice() });
         if (genHistoryRef.current.length > 2000) genHistoryRef.current.shift();
 
-        const expanded = expandedVarNamesRef.current;
-        const baseVals: number[] = [];
-        const seenBases = new Set<string>();
-        for (let i = 0; i < expanded.length && baseVals.length < 3; i++) {
-          const nm = expanded[i];
-          const base = nm.split('_')[0];
-          if (!seenBases.has(base)) {
-            seenBases.add(base);
-            baseVals.push(stateRef.current[i] ?? 0);
-          }
-        }
-        while (baseVals.length < 3) baseVals.push(0);
-        setParticlePos([baseVals[0], baseVals[1], baseVals[2]]);
-
-        setVariableTrails(prev => {
-          if (!showTrail) {
-            return {};
-          }
-          const next = { ...prev };
-          for (let i = 0; i < vars.length; i++) {
-            const baseName = vars[i].name || `x${i+1}`;
-            const key = `v:${baseName}`;
-            const pxv = baseVals[0] ?? 0;
-            const pyv = baseVals[1] ?? 0;
-            const pzv = baseVals[2] ?? 0;
-            next[key] = [...(next[key] || []), { x: pxv, y: pyv, z: pzv }];
-            if (!isTrailInfinite && next[key].length > trailLength) {
-              next[key] = next[key].slice(-trailLength);
+        // 粒子ごとの現在位置を更新（各粒子の最初の3基底変数）
+        const newPositions: Record<number, [number, number, number]> = {};
+        let idx = 0;
+        particles.forEach((p) => {
+          const vals: number[] = [];
+          p.vars.slice(0, 3).forEach((g) => {
+            if (g.order > 0) {
+              vals.push(stateRef.current[idx] ?? 0);
+              idx += g.order;
             }
-          }
+          });
+          while (vals.length < 3) vals.push(0);
+          newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+        });
+        setParticlePos(newPositions);
+
+        // 軌跡
+        setTrails((prev) => {
+          if (!showTrail) return {};
+          const next: Record<number, { x: number; y: number; z: number }[]> = { ...prev };
+          particles.forEach((p) => {
+            const pos = newPositions[p.id] || [0, 0, 0];
+            next[p.id] = [...(next[p.id] || []), { x: pos[0], y: pos[1], z: pos[2] }];
+            if (!isTrailInfinite && next[p.id].length > trailLength) {
+              next[p.id] = next[p.id].slice(-trailLength);
+            }
+          });
           return next;
         });
 
@@ -294,85 +314,117 @@ function preprocessExpr(expr: string): string {
     };
 
     rafRef.current = requestAnimationFrame(step);
-
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, vars]);
+  }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, particles]);
 
-  const toggleRunning = () => setRunning(r => !r);
+  // ===== UI handlers =====
+  const toggleRunning = () => setRunning((r) => !r);
 
   const resetAll = () => {
     setRunning(false);
     timeRef.current = 0;
     genHistoryRef.current = [];
-    setVariableTrails({});
+    setTrails({});
     buildSystem();
+
+    // 初期位置の設定
     const s = stateRef.current;
-    const px = s[0] ?? 0, py = s[1] ?? 0, pz = s[2] ?? 0;
-    setParticlePos([px, py, pz]);
-  };
-
-  const updateVar = (i: number, patch: Partial<GenVar>) => {
-    if (typeof patch.expr === 'string') {
-      patch.expr = patch.expr.replace(/=/g, '');
-    }
-    setVars(prev => {
-      const next = prev.slice();
-      next[i] = { ...next[i], ...patch };
-      return next;
+    const newPositions: Record<number, [number, number, number]> = {};
+    let idx = 0;
+    particles.forEach((p) => {
+      const vals: number[] = [];
+      p.vars.slice(0, 3).forEach((g) => {
+        if (g.order > 0) {
+          vals.push(s[idx] ?? 0);
+          idx += g.order;
+        }
+      });
+      while (vals.length < 3) vals.push(0);
+      newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
     });
-  };
-
-  const addVariable = () => {
-    if (vars.length >= 3) return;
-    setVars(prev => [
-      ...prev,
-      { name: `x${prev.length+1}`, order: 1, initial: "0", expr: "0" }
-    ]);
-  };
-
-  const removeVariable = (i: number) => {
-    setVars(prev => {
-      const next = prev.slice();
-      next.splice(i, 1);
-      return next;
-    });
+    setParticlePos(newPositions);
   };
 
   const applyAndCompile = () => {
     buildSystem();
     timeRef.current = 0;
     genHistoryRef.current = [];
-    setVariableTrails({});
+    setTrails({});
+
     const s = stateRef.current;
-    setParticlePos([s[0] ?? 0, s[1] ?? 0, s[2] ?? 0]);
+    const newPositions: Record<number, [number, number, number]> = {};
+    let idx = 0;
+    particles.forEach((p) => {
+      const vals: number[] = [];
+      p.vars.slice(0, 3).forEach((g) => {
+        if (g.order > 0) {
+          vals.push(s[idx] ?? 0);
+          idx += g.order;
+        }
+      });
+      while (vals.length < 3) vals.push(0);
+      newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+    });
+    setParticlePos(newPositions);
   };
 
-  const showGraph = (index: number) => {
-    setSelectedVarIndex(index);
-    setView('graph');
+  // 変数編集（アクティブ粒子のみ既存UIを流用）
+  const updateVar = (i: number, patch: Partial<GenVar>) => {
+    if (typeof patch.expr === "string") patch.expr = patch.expr.replace(/=/g, "");
+    setParticles((prev) =>
+      prev.map((p) =>
+        p.id !== activePid
+          ? p
+          : {
+              ...p,
+              vars: p.vars.map((v, idx) => (idx === i ? { ...v, ...patch } : v)),
+            }
+      )
+    );
+  };
+  const addVariable = () => {
+    setParticles((prev) =>
+      prev.map((p) =>
+        p.id !== activePid || p.vars.length >= 3
+          ? p
+          : { ...p, vars: [...p.vars, { name: `x${p.vars.length + 1}`, order: 1, initial: "0", expr: "0" }] }
+      )
+    );
+  };
+  const removeVariable = (i: number) => {
+    setParticles((prev) =>
+      prev.map((p) => (p.id !== activePid ? p : { ...p, vars: p.vars.filter((_, j) => j !== i) }))
+    );
   };
 
-  const closeGraph = () => {
-    setView('simulator');
-    setSelectedVarIndex(null);
+  // 粒子管理（最小限）
+  const addParticle = () => {
+    const newId = Math.max(0, ...particles.map((p) => p.id)) + 1;
+    setParticles((prev) => [
+      ...prev,
+      {
+        id: newId,
+        color: "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0"),
+        vars: [{ name: "x", order: 1, initial: "0", expr: "0" }],
+      },
+    ]);
+    setActivePid(newId);
   };
-
-  const containerColor = () => particleColor || DEFAULT_PARTICLE_COLOR;
-  function trailColor(): string {
-    const c = containerColor();
-    if (c.startsWith("#") && c.length === 7) {
-      const r = parseInt(c.slice(1, 3), 16);
-      const g = parseInt(c.slice(3, 5), 16);
-      const b = parseInt(c.slice(5, 7), 16);
-      return `rgba(${r},${g},${b},0.3)`;
+  const removeParticle = (pid: number) => {
+    setParticles((prev) => prev.filter((p) => p.id !== pid));
+    if (activePid === pid) {
+      const rest = particles.filter((p) => p.id !== pid);
+      setActivePid(rest[0]?.id ?? 0);
     }
-    return c;
-  }
-  const variableUiColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
+  };
+  const updateParticleColor = (pid: number, color: string) => {
+    setParticles((prev) => prev.map((p) => (p.id === pid ? { ...p, color } : p)));
+  };
 
+  // ===== Axes helper =====
   const AxesHelper = () => {
     const length = 1000;
     if (!showAxes) return null;
@@ -385,60 +437,99 @@ function preprocessExpr(expr: string): string {
     );
   };
 
-  if (view === 'graph') {
+  // ===== Graph view (選択粒子だけをフィルタして渡す) =====
+  if (view === "graph" && activeParticle) {
+    const prefix = `p${activeParticle.id}_`;
+    const allNames = expandedVarNamesRef.current;
+    const indices = allNames.map((nm, i) => (nm.startsWith(prefix) ? i : -1)).filter((i) => i >= 0);
+    const filteredNames = indices.map((i) => allNames[i].slice(prefix.length));
+    const filteredHistory = genHistoryRef.current.map((h) => ({
+      time: h.time,
+      values: indices.map((i) => h.values[i] ?? 0),
+    }));
+
     return (
       <GraphView
-        historyData={genHistoryRef.current}
-        vars={vars}
-        expandedVarNames={expandedVarNamesRef.current}
+        historyData={filteredHistory}
+        vars={activeParticle.vars}
+        expandedVarNames={filteredNames}
         selectedVarIndex={selectedVarIndex}
-        onClose={closeGraph}
+        onClose={() => setView("simulator")}
         dt={dt}
       />
     );
   }
 
+  // ===== Render =====
   return (
     <div className="flex gap-4 p-4 h-screen bg-slate-900 text-white">
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex items-center gap-2 mb-2 flex-wrap">
-          <button className="px-3 py-1 rounded bg-green-500" onClick={toggleRunning}>{running ? "停止" : "再生"}</button>
+          <button className="px-3 py-1 rounded bg-green-500" onClick={toggleRunning}>
+            {running ? "停止" : "再生"}
+          </button>
           <button className="px-3 py-1 rounded bg-blue-500" onClick={resetAll}>リセット</button>
-          <label className="text-sm">dt:
-            <input className="ml-1 w-20 rounded bg-slate-700 text-white px-1" value={String(dt)} onChange={(e) => setDt(Number(e.target.value) || dt)} />
+          <label className="text-sm">
+            dt:
+            <input
+              className="ml-1 w-20 rounded bg-slate-700 text-white px-1"
+              value={String(dt)}
+              onChange={(e) => setDt(Number(e.target.value) || dt)}
+            />
           </label>
-          <label className="text-sm">速度:
-            <input type="range" min="0.1" max="5" step="0.1" value={playbackSpeed} onChange={(e) => setPlaybackSpeed(Number(e.target.value))} className="mx-2" />
+          <label className="text-sm">
+            速度:
+            <input
+              type="range"
+              min="0.1"
+              max="5"
+              step="0.1"
+              value={playbackSpeed}
+              onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+              className="mx-2"
+            />
             <span>{playbackSpeed.toFixed(1)}x</span>
           </label>
         </div>
 
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
           <Canvas camera={{ position: [6, 6, 6], fov: 50 }}>
-            <color attach="background" args={['#0b1220']} />
+            <color attach="background" args={["#0b1220"]} />
             <hemisphereLight intensity={0.5} />
             <ambientLight intensity={0.3} />
             <pointLight position={[10, 10, 10]} intensity={0.6} />
             <Grid infiniteGrid fadeDistance={30} fadeStrength={5} />
             <AxesHelper />
-            <mesh position={particlePos}>
-              <sphereGeometry args={[0.2, 32, 32]} />
-              <meshStandardMaterial color={containerColor()} />
-            </mesh>
-            {Object.entries(variableTrails).map(([key, trail]) => {
-              if (!trail || trail.length < 2) return null;
-              const points = trail.map(t => new THREE.Vector3(t.x, t.y, t.z));
-              const col = trailColor();
-              return <Line key={key} points={points} lineWidth={2} color={col} />;
-            })}
+
+            {particles.map((p) => (
+              <React.Fragment key={p.id}>
+                <mesh position={particlePos[p.id] || [0, 0, 0]}> 
+                  <sphereGeometry args={[0.2, 32, 32]} />
+                  <meshStandardMaterial color={p.color} />
+                </mesh>
+                {trails[p.id] && trails[p.id].length > 1 && (
+                  <Line
+                    points={trails[p.id].map((t) => new THREE.Vector3(t.x, t.y, t.z))}
+                    lineWidth={2}
+                    color={p.color}
+                  />
+                )}
+              </React.Fragment>
+            ))}
+
             <OrbitControls />
           </Canvas>
         </div>
 
         <div className="mt-2 flex gap-2 items-center text-xs flex-wrap">
           <div>時間: {timeRef.current.toFixed(3)} s</div>
-          <label className="flex items-center gap-1 ml-auto">軌跡長:
-            <input className="ml-1 w-20 rounded bg-slate-700 text-white px-1" value={String(trailLength)} onChange={(e) => setTrailLength(Number(e.target.value) || trailLength)} />
+          <label className="flex items-center gap-1 ml-auto">
+            軌跡長:
+            <input
+              className="ml-1 w-20 rounded bg-slate-700 text-white px-1"
+              value={String(trailLength)}
+              onChange={(e) => setTrailLength(Number(e.target.value) || trailLength)}
+            />
           </label>
           <label className="flex items-center gap-1 ml-4">
             <input type="checkbox" checked={isTrailInfinite} onChange={(e) => setIsTrailInfinite(e.target.checked)} />
@@ -449,40 +540,70 @@ function preprocessExpr(expr: string): string {
             軌跡表示
           </label>
           <label className="flex items-center gap-1 ml-2">
-            <input type="checkbox" checked={showAxes} onChange={e => setShowAxes(e.target.checked)} />
+            <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} />
             軸表示
-          </label>
-          <label className="flex items-center gap-1 ml-2">
-            質点色:
-            <input
-              type="color"
-              className="ml-1 w-6 h-6 rounded border-0 p-0"
-              value={particleColor}
-              onChange={e => setParticleColor(e.target.value)}
-            />
           </label>
         </div>
       </div>
 
+      {/* === Sidebar (UIはできる限り既存を維持) === */}
       <div className="w-2/5 flex flex-col gap-4 overflow-y-auto h-full pr-2">
+        {/* 粒子管理（最小限）：追加・選択・削除・色 */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button className="px-3 py-1 rounded bg-purple-600" onClick={addParticle}>質点を追加</button>
+          <label className="text-xs">対象質点:
+            <select
+              className="ml-1 bg-slate-700 rounded px-1"
+              value={activePid}
+              onChange={(e) => setActivePid(Number(e.target.value))}
+            >
+              {particles.map((p) => (
+                <option key={p.id} value={p.id}>{`質点 ${p.id}`}</option>
+              ))}
+            </select>
+          </label>
+          {activeParticle && (
+            <>
+              <label className="flex items-center gap-1 text-xs">
+                色:
+                <input
+                  type="color"
+                  className="ml-1 w-6 h-6 rounded border-0 p-0"
+                  value={activeParticle.color}
+                  onChange={(e) => updateParticleColor(activeParticle.id, e.target.value)}
+                />
+              </label>
+              {particles.length > 1 && (
+                <button className="bg-red-600 px-2 py-0.5 rounded text-sm" onClick={() => removeParticle(activeParticle.id)}>
+                  選択質点を削除
+                </button>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* 既存の変数UI：選択中の粒子に対してのみ表示（最大3変数） */}
         <div className="flex items-center gap-2">
-          <button className="px-3 py-1 rounded bg-purple-600" onClick={addVariable} disabled={vars.length >= 3}>変数を追加</button>
+          <button className="px-3 py-1 rounded bg-purple-600" onClick={addVariable} disabled={(activeParticle?.vars.length ?? 0) >= 3}>
+            変数を追加
+          </button>
           <div className="text-xs text-gray-300">（上から順に 赤, 緑, 青 軸に対応）</div>
         </div>
 
-        {vars.slice(0, 3).map((g, i) => (
+        {activeParticle?.vars.slice(0, 3).map((g, i) => (
           <div key={i} className="border border-slate-700 rounded p-3" style={{ background: variableUiColor(i) + "22" }}>
             <div className="flex items-center justify-between">
-              <strong style={{ color: variableUiColor(i) }}>
-                {`${i+1}. ${renderVarName(g.name || `var${i+1}`)}`}
-              </strong>
+              <strong style={{ color: variableUiColor(i) }}>{`${i + 1}. ${g.name || `var${i + 1}`}`}</strong>
               <div className="flex items-center gap-2">
-                <button className="bg-teal-600 px-2 py-0.5 rounded text-sm" onClick={() => showGraph(i)}>グラフ</button>
-                <label className="text-xs">階数:
+                <button className="bg-teal-600 px-2 py-0.5 rounded text-sm" onClick={() => { setSelectedVarIndex(i); setView("graph"); }}>
+                  グラフ
+                </button>
+                <label className="text-xs">
+                  階数:
                   <select
                     className="ml-1 bg-slate-700 rounded px-1"
                     value={g.order ?? 1}
-                    onChange={e => updateVar(i, { order: Number(e.target.value) })}
+                    onChange={(e) => updateVar(i, { order: Number(e.target.value) })}
                   >
                     <option value={0}>0階</option>
                     <option value={1}>1階</option>
@@ -490,9 +611,12 @@ function preprocessExpr(expr: string): string {
                     <option value={3}>3階</option>
                   </select>
                 </label>
-                <button className="bg-red-600 px-2 py-0.5 rounded text-sm" onClick={() => removeVariable(i)}>削除</button>
+                <button className="bg-red-600 px-2 py-0.5 rounded text-sm" onClick={() => removeVariable(i)}>
+                  削除
+                </button>
               </div>
             </div>
+
             <div className="mt-2 grid grid-cols-2 gap-2 items-center">
               <div>
                 <div className="text-xs">変数名</div>
@@ -515,17 +639,14 @@ function preprocessExpr(expr: string): string {
                 </div>
               )}
             </div>
+
             <div className="mt-2">
               <div className="text-xs">微分方程式(右辺)</div>
               <textarea className="w-full rounded bg-slate-700 px-1 py-1 mt-1 text-sm" value={g.expr} onChange={(e) => updateVar(i, { expr: e.target.value })} rows={3} />
               <div className="mt-1 text-xs text-gray-300">
-                {(g.order ?? 1) === 0
-                  ? "これは定数です。"
-                  : `d^${g.order}${renderVarName(g.name)}/dt^${g.order} = の右辺を入力してください。`
-                }<br />
-                {/* ギリシャ文字は「theta」「omega」「gamma」などASCII綴りで入力できます（例: theta → θ, omega → ω）。<br /> */}
+                {(g.order ?? 1) === 0 ? "これは定数です。" : `d^${g.order}${g.name}/dt^${g.order} = の右辺を入力してください。`}<br />
                 式中では t、定数 eps0, mu0, k, g, G を使用可能。<br />
-                微分はアポストロフィで入力してください。<br />
+                微分はアポストロフィで入力してください。
               </div>
             </div>
           </div>
@@ -533,9 +654,30 @@ function preprocessExpr(expr: string): string {
 
         <div className="mt-2 flex gap-2">
           <button className="bg-indigo-600 px-3 py-1 rounded" onClick={applyAndCompile}>初期値・式を適用</button>
-          <button className="bg-gray-600 px-3 py-1 rounded" onClick={() => { /* set particle to initial immediately */ buildSystem(); const s = stateRef.current; setParticlePos([s[0] ?? 0, s[1] ?? 0, s[2] ?? 0]); }}>Set Initials</button>
+          <button
+            className="bg-gray-600 px-3 py-1 rounded"
+            onClick={() => {
+              buildSystem();
+              const s = stateRef.current;
+              const newPositions: Record<number, [number, number, number]> = {};
+              let idx = 0;
+              particles.forEach((p) => {
+                const vals: number[] = [];
+                p.vars.slice(0, 3).forEach((g) => {
+                  if (g.order > 0) {
+                    vals.push(s[idx] ?? 0);
+                    idx += g.order;
+                  }
+                });
+                while (vals.length < 3) vals.push(0);
+                newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+              });
+              setParticlePos(newPositions);
+            }}
+          >
+            Set Initials
+          </button>
         </div>
-
       </div>
     </div>
   );
