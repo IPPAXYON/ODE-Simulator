@@ -96,7 +96,7 @@ export default function PoincareView({
                     value={poincareConfig.planeVar}
                     onChange={(e) => onConfigChange({ planeVar: e.target.value })}
                   >
-                    {allPoincareVars.flatMap(v => [
+                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
                       <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
                       <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
@@ -156,7 +156,7 @@ export default function PoincareView({
                     value={poincareConfig.plotX}
                     onChange={(e) => onConfigChange({ plotX: e.target.value })}
                   >
-                    {allPoincareVars.flatMap(v => [
+                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
                       <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
                       <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
@@ -171,7 +171,7 @@ export default function PoincareView({
                     value={poincareConfig.plotY}
                     onChange={(e) => onConfigChange({ plotY: e.target.value })}
                   >
-                    {allPoincareVars.flatMap(v => [
+                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
                       <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
                       <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
