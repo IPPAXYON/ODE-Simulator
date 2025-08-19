@@ -41,8 +41,8 @@ export default function ODESimulatorCanvas() {
     planeVar: "",
     planeValue: "0",
     direction: "positive",
-    plotX: "",
-    plotY: "",
+    plotX: "p1_x", // Default to x
+    plotY: "p1_y", // Default to y
   });
   const [poincarePoints, setPoincarePoints] = useState<THREE.Vector3[]>([]);
 
@@ -159,6 +159,7 @@ export default function ODESimulatorCanvas() {
     const map: Record<string, number> = {};
     expanded.forEach((nm, i) => { map[nm] = i; });
     nameToIndexRef.current = map;
+    console.log("DEBUG: nameToIndexRef.current:", nameToIndexRef.current);
   };
 
   // ===== Evaluator =====
@@ -187,6 +188,7 @@ export default function ODESimulatorCanvas() {
   }
 
   const evalDeriv = (y: number[], tNow: number) => {
+    console.log("DEBUG: evalDeriv input y:", y); // New line
     const expanded = expandedVarNamesRef.current;
     const scopeBase: Scope = {
       t: tNow,
@@ -251,6 +253,19 @@ export default function ODESimulatorCanvas() {
     return state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
   };
 
+  // ===== Helper: Poincare Section Sampling =====
+  const samplePoincare = (state: number[]) => {
+    const idxX = nameToIndexRef.current[poincareConfig.plotX];
+    const idxY = nameToIndexRef.current[poincareConfig.plotY];
+    if (idxX != null && idxY != null) {
+      const x = state[idxX] ?? 0;
+      const y = state[idxY] ?? 0;
+      const newPoint = new THREE.Vector3(x, y, 0);
+      console.log("DEBUG: Point sampled!", newPoint); // Very simple log
+      setPoincarePoints(prev => [...prev, newPoint]);
+    }
+  };
+
   // ===== Main loop =====
   useEffect(() => {
     if (!running) {
@@ -276,12 +291,57 @@ export default function ODESimulatorCanvas() {
       steps = Math.min(steps, 10);
 
       for (let s = 0; s < steps; s++) {
+        const prevState = stateRef.current.slice(); // 前ステップのコピー
         const tNow = timeRef.current;
         const newState = rk4(stateRef.current, stepSize, tNow);
+         console.log("DEBUG: rk4 newState:", newState);
+
         stateRef.current = newState;
         timeRef.current += stepSize;
         genHistoryRef.current.push({ time: timeRef.current, values: newState.slice() });
         if (genHistoryRef.current.length > 2000) genHistoryRef.current.shift();
+
+        // ---- Poincare Section Recording ----
+        if (poincareConfig.mode === "time") {
+          try {
+            const Tnode = compileExpression(poincareConfig.period);
+            const T = evaluateNode(Tnode, { t: timeRef.current }) || 0;
+            if (T > 0) {
+              const prevT = timeRef.current - stepSize;
+              const nPrev = Math.floor(prevT / T);
+              const nNow = Math.floor(timeRef.current / T);
+              if (nNow > nPrev) samplePoincare(newState);
+            }
+          } catch {}
+        } else if (poincareConfig.mode === "plane") {
+          console.log("DEBUG: poincareConfig.direction at check:", poincareConfig.direction);
+          const idx = nameToIndexRef.current[poincareConfig.planeVar];
+          if (idx != null) {
+            const prevVal = prevState[idx]; // 前ステップの値を使用
+            const newVal = newState[idx];
+            const planeVal = Number(poincareConfig.planeValue) || 0;
+
+            console.log("DEBUG: Poincare Plane Check - planeVar:", poincareConfig.planeVar, "idx:", idx);
+            console.log("DEBUG:   prevVal:", prevVal, "newVal:", newVal, "planeVal:", planeVal);
+
+            let crossed = false;
+            if (poincareConfig.direction === "positive" && prevVal < planeVal && newVal >= planeVal) {
+              crossed = true;
+            } else if (poincareConfig.direction === "negative" && prevVal > planeVal && newVal <= planeVal) {
+              crossed = true;
+            } else if (poincareConfig.direction === "both" && ((prevVal < planeVal && newVal >= planeVal) || (prevVal > planeVal && newVal <= planeVal))) {
+              crossed = true;
+            }
+
+            if (crossed) {
+              samplePoincare(newState);
+              console.log("DEBUG: Plane crossed. Direction:", poincareConfig.direction);
+            } else {
+              console.log("DEBUG: Plane not crossed.");
+            }
+          }
+        }
+        // ---- End Poincare Section Recording ----
 
         // 粒子ごとの現在位置を更新
         const newPositions: Record<number, [number, number, number]> = {};

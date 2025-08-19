@@ -33,6 +33,8 @@ export default function PoincareView({
     setPoincarePoints([]);
   };
 
+  console.log("PoincareView: poincarePoints", poincarePoints); // Add this line
+
   return (
     <div className="absolute inset-0 bg-slate-800 bg-opacity-90 z-10 flex flex-col p-4">
       <div className="flex-1 flex gap-4 min-h-0">
@@ -188,11 +190,15 @@ export default function PoincareView({
 
         {/* === Canvas === */}
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
-          <Canvas camera={{ position: [0, 0, 30], fov: 50 }}>
+          <Canvas camera={{ position: [0, 15, 40], fov: 50 }}>
             <color attach="background" args={["#0b1220"]} />
             <Grid infiniteGrid fadeDistance={50} fadeStrength={5} />
             {poincarePoints.length > 0 && (
-              <Points positions={new Float32Array(poincarePoints.flatMap(p => [p.x, p.y, 0]))}>
+              <Points positions={new Float32Array(poincarePoints.flatMap(p => {
+                const coords = [p.x, p.y, 0];
+                console.log("PoincareView: Point coords", coords); // Add this line
+                return coords;
+              }))}>
                 <pointsMaterial color="white" size={1.0} />
               </Points>
             )}
