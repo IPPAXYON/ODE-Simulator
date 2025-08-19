@@ -4,7 +4,7 @@ import React from "react";
 import { Canvas } from "@react-three/fiber";
 import { Points, OrbitControls, Grid } from "@react-three/drei";
 import * as THREE from "three";
-import { PoincareConfig } from "./page";
+import { PoincareConfig } from "./types";
 
 type PoincareViewProps = {
   poincareConfig: PoincareConfig;
@@ -121,7 +121,7 @@ export default function PoincareView({
                     type="radio"
                     value="positive"
                     checked={poincareConfig.direction === "positive"}
-                    onChange={(e) => onConfigChange({ direction: e.target.value as any })}
+                    onChange={(e) => onConfigChange({ direction: e.target.value as "positive" | "negative" | "both" })}
                   />
                   正方向
                 </label>
@@ -130,7 +130,7 @@ export default function PoincareView({
                     type="radio"
                     value="negative"
                     checked={poincareConfig.direction === "negative"}
-                    onChange={(e) => onConfigChange({ direction: e.target.value as any })}
+                    onChange={(e) => onConfigChange({ direction: e.target.value as "positive" | "negative" | "both" })}
                   />
                   負方向
                 </label>
@@ -139,7 +139,7 @@ export default function PoincareView({
                     type="radio"
                     value="both"
                     checked={poincareConfig.direction === "both"}
-                    onChange={(e) => onConfigChange({ direction: e.target.value as any })}
+                    onChange={(e) => onConfigChange({ direction: e.target.value as "positive" | "negative" | "both" })}
                   />
                   両方
                 </label>

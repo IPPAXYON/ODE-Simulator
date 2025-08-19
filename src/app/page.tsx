@@ -163,15 +163,27 @@ export default function ODESimulatorCanvas() {
   };
 
   // ===== Evaluator =====
-  interface Scope {
-    t: number;
+  interface BaseScopeConstants {
     eps0: number;
     mu0: number;
     k: number;
     g: number;
     G: number;
+  }
+
+  interface Scope extends BaseScopeConstants {
+    t: number;
     [key: string]: number | ((...args: number[]) => number) | ((...args: number[]) => number[]);
   }
+
+  // Define baseScope here
+  const baseScope: BaseScopeConstants = { // Omit 't' as it's dynamic
+    eps0: 8.8541878128e-12,
+    mu0: 4 * Math.PI * 1e-7,
+    k: 8.9875517923e9,
+    g: 9.80665,
+    G: 6.67430e-11,
+  };
 
   function evaluateNode(node: MathNode | null, scope: Scope): number {
     if (!node) return 0;
@@ -190,13 +202,9 @@ export default function ODESimulatorCanvas() {
   const evalDeriv = (y: number[], tNow: number) => {
     console.log("DEBUG: evalDeriv input y:", y); // New line
     const expanded = expandedVarNamesRef.current;
-    const scopeBase: Scope = {
+    const scopeBase: Scope = { // This will now include baseScope
       t: tNow,
-      eps0: 8.8541878128e-12,
-      mu0: 4 * Math.PI * 1e-7,
-      k: 8.9875517923e9,
-      g: 9.80665,
-      G: 6.67430e-11,
+      ...baseScope, // Spread baseScope here
     };
 
     // すべての展開名をスコープに入れる（p{id}_x など）
@@ -305,7 +313,8 @@ export default function ODESimulatorCanvas() {
         if (poincareConfig.mode === "time") {
           try {
             const Tnode = compileExpression(poincareConfig.period);
-            const T = evaluateNode(Tnode, { t: timeRef.current }) || 0;
+            const currentScope: Scope = { t: timeRef.current, ...baseScope };
+            const T = evaluateNode(Tnode, currentScope) || 0;
             if (T > 0) {
               const prevT = timeRef.current - stepSize;
               const nPrev = Math.floor(prevT / T);
