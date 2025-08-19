@@ -109,7 +109,9 @@ export default function ODESimulatorCanvas() {
         const base = `p${p.id}_${g.name || "x"}`;
         if (g.order > 0) expanded.push(base);
         for (let o = 1; o < (g.order || 0); o++) {
-          expanded.push(`${base}_${"d".repeat(o)}ot`);
+           if (o === 1) expanded.push(`${base}_dot`);
+           else if (o === 2) expanded.push(`${base}_ddot`);
+           else if (o === 3) expanded.push(`${base}_dddot`);
         }
       });
     });
@@ -127,7 +129,9 @@ export default function ODESimulatorCanvas() {
         } else {
           // 1階〜(order-1)階は"その次の導関数"に等しい形
           for (let o = 1; o < g.order; o++) {
-            exprs.push(`${base}_${"d".repeat(o)}ot`);
+          if (o === 1) exprs.push(`${base}_dot`);
+          else if (o === 2) exprs.push(`${base}_ddot`);
+          else if (o === 3) exprs.push(`${base}_dddot`);
             exprPids.push(p.id);
           }
           // 最後に与えられた右辺
@@ -159,7 +163,6 @@ export default function ODESimulatorCanvas() {
     const map: Record<string, number> = {};
     expanded.forEach((nm, i) => { map[nm] = i; });
     nameToIndexRef.current = map;
-    console.log("DEBUG: nameToIndexRef.current:", nameToIndexRef.current);
   };
 
   // ===== Evaluator =====
@@ -200,7 +203,6 @@ export default function ODESimulatorCanvas() {
   }
 
   const evalDeriv = (y: number[], tNow: number) => {
-    console.log("DEBUG: evalDeriv input y:", y); // New line
     const expanded = expandedVarNamesRef.current;
     const scopeBase: Scope = { // This will now include baseScope
       t: tNow,
@@ -269,7 +271,6 @@ export default function ODESimulatorCanvas() {
       const x = state[idxX] ?? 0;
       const y = state[idxY] ?? 0;
       const newPoint = new THREE.Vector3(x, y, 0);
-      console.log("DEBUG: Point sampled!", newPoint); // Very simple log
       setPoincarePoints(prev => [...prev, newPoint]);
     }
   };
@@ -302,7 +303,6 @@ export default function ODESimulatorCanvas() {
         const prevState = stateRef.current.slice(); // 前ステップのコピー
         const tNow = timeRef.current;
         const newState = rk4(stateRef.current, stepSize, tNow);
-         console.log("DEBUG: rk4 newState:", newState);
 
         stateRef.current = newState;
         timeRef.current += stepSize;
@@ -323,15 +323,12 @@ export default function ODESimulatorCanvas() {
             }
           } catch {}
         } else if (poincareConfig.mode === "plane") {
-          console.log("DEBUG: poincareConfig.direction at check:", poincareConfig.direction);
           const idx = nameToIndexRef.current[poincareConfig.planeVar];
           if (idx != null) {
             const prevVal = prevState[idx]; // 前ステップの値を使用
             const newVal = newState[idx];
             const planeVal = Number(poincareConfig.planeValue) || 0;
 
-            console.log("DEBUG: Poincare Plane Check - planeVar:", poincareConfig.planeVar, "idx:", idx);
-            console.log("DEBUG:   prevVal:", prevVal, "newVal:", newVal, "planeVal:", planeVal);
 
             let crossed = false;
             if (poincareConfig.direction === "positive" && prevVal < planeVal && newVal >= planeVal) {
@@ -344,10 +341,9 @@ export default function ODESimulatorCanvas() {
 
             if (crossed) {
               samplePoincare(newState);
-              console.log("DEBUG: Plane crossed. Direction:", poincareConfig.direction);
             } else {
-              console.log("DEBUG: Plane not crossed.");
             }
+          } else {
           }
         }
         // ---- End Poincare Section Recording ----
@@ -642,12 +638,14 @@ export default function ODESimulatorCanvas() {
               <option value="phase">相空間</option>
             </select>
           </label>
-          <button
-            className="ml-auto px-3 py-1 rounded bg-pink-600"
-            onClick={() => setShowPoincare(true)}
-          >
-            ポアンカレ断面
-          </button>
+          {displayMode === "phase" && (
+            <button
+              className="ml-auto px-3 py-1 rounded bg-pink-600"
+              onClick={() => setShowPoincare(true)}
+            >
+              ポアンカレ断面
+            </button>
+          )}
         </div>
 
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
@@ -946,10 +944,23 @@ export default function ODESimulatorCanvas() {
           poincarePoints={poincarePoints}
           setPoincarePoints={setPoincarePoints}
           allPoincareVars={expandedVarNamesRef.current}
-          formatPoincareVarName={(nm) => nm}
+          formatPoincareVarName={formatVarNameForDisplay}
           onClose={() => setShowPoincare(false)}
         />
       )}
     </div>
   );
+
+  // Helper function to format variable names for display in PoincareView
+  function formatVarNameForDisplay(name: string): string {
+    // Remove particle prefix (e.g., "p1_")
+    let formattedName = name.replace(/^p\d+_/, '');
+
+    // Replace derivative suffixes with prime notation
+    formattedName = formattedName.replace(/_dddot$/, "'''");
+    formattedName = formattedName.replace(/_ddot$/, "''");
+    formattedName = formattedName.replace(/_dot$/, "'");
+
+    return formattedName;
+  }
 }

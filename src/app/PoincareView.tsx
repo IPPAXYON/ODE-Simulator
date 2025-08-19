@@ -2,9 +2,11 @@
 
 import React from "react";
 import { Canvas } from "@react-three/fiber";
-import { Points, OrbitControls, Grid } from "@react-three/drei";
+import { Points, OrbitControls, Grid, Line } from "@react-three/drei";
 import * as THREE from "three";
 import { PoincareConfig } from "./types";
+
+const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
 
 type PoincareViewProps = {
   poincareConfig: PoincareConfig;
@@ -25,12 +27,53 @@ export default function PoincareView({
   formatPoincareVarName,
   onClose,
 }: PoincareViewProps) {
+  console.log("DEBUG: allPoincareVars:", allPoincareVars.join(", ")); // Add this line
+  const [showAxes, setShowAxes] = React.useState<boolean>(true); // New state for axes
+
+  // --- Ensure defaults are committed into state so the engine can use them ---
+  React.useEffect(() => {
+    if (poincareConfig.mode === "plane") {
+      const def = poincareConfig.planeVar || allPoincareVars[0] || "";
+      if (def && poincareConfig.planeVar !== def) {
+        setPoincareConfig((prev) => ({ ...prev, planeVar: def }));
+      }
+    }
+  }, [poincareConfig.mode, poincareConfig.planeVar, allPoincareVars, setPoincareConfig]);
+
+  React.useEffect(() => {
+    const defX = poincareConfig.plotX || allPoincareVars[0] || "";
+    if (defX && poincareConfig.plotX !== defX) {
+      setPoincareConfig((prev) => ({ ...prev, plotX: defX }));
+    }
+  }, [poincareConfig.plotX, allPoincareVars, setPoincareConfig]);
+
+  React.useEffect(() => {
+    const second = allPoincareVars[1] || allPoincareVars[0] || "";
+    const defY = poincareConfig.plotY || second;
+    if (defY && poincareConfig.plotY !== defY) {
+      setPoincareConfig((prev) => ({ ...prev, plotY: defY }));
+    }
+  }, [poincareConfig.plotY, allPoincareVars, setPoincareConfig]);
+
   const onConfigChange = (newConfig: Partial<PoincareConfig>) => {
+    console.log("DEBUG: onConfigChange received:", newConfig, "planeVar:", newConfig.planeVar); // Modified line
     setPoincareConfig((prev) => ({ ...prev, ...newConfig }));
   };
 
   const onClear = () => {
     setPoincarePoints([]);
+  };
+
+  // Axes Helper component for Poincare View
+  const AxesHelper = () => {
+    const length = 100; // Adjust length for Poincare section scale
+    if (!showAxes) return null;
+    return (
+      <>
+        <Line points={[-length, 0, 0, length, 0, 0]} color={AXIS_COLORS[0]} lineWidth={2} /> {/* X-axis */}
+        <Line points={[0, -length, 0, 0, length, 0]} color={AXIS_COLORS[1]} lineWidth={2} /> {/* Y-axis */}
+      </>
+    );
   };
 
   console.log("PoincareView: poincarePoints", poincarePoints); // Add this line
@@ -46,6 +89,12 @@ export default function PoincareView({
               閉じる
             </button>
           </div>
+
+          {/* Add Axes Toggle */}
+          <label className="flex items-center gap-1 text-sm">
+            <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} />
+            軸表示
+          </label>
 
           {/* Mode Selection */}
           <div className="p-2 rounded bg-slate-700">
@@ -95,13 +144,12 @@ export default function PoincareView({
                   変数:
                   <select
                     className="ml-2 w-full bg-slate-600 rounded px-2 py-1"
-                    value={poincareConfig.planeVar}
+                    value={poincareConfig.planeVar || allPoincareVars[0] || ""} // Set default if empty
                     onChange={(e) => onConfigChange({ planeVar: e.target.value })}
                   >
-                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
-                    ])}
+                    {allPoincareVars.map(v => (
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -158,10 +206,9 @@ export default function PoincareView({
                     value={poincareConfig.plotX}
                     onChange={(e) => onConfigChange({ plotX: e.target.value })}
                   >
-                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
-                    ])}
+                    {allPoincareVars.map(v => (
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -173,10 +220,9 @@ export default function PoincareView({
                     value={poincareConfig.plotY}
                     onChange={(e) => onConfigChange({ plotY: e.target.value })}
                   >
-                    {allPoincareVars.filter(v => !v.endsWith("_dot")).flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
-                    ])}
+                    {allPoincareVars.map(v => (
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>
+                    ))}
                   </select>
                 </label>
               </div>
@@ -193,6 +239,7 @@ export default function PoincareView({
           <Canvas camera={{ position: [0, 15, 40], fov: 50 }}>
             <color attach="background" args={["#0b1220"]} />
             <Grid infiniteGrid fadeDistance={50} fadeStrength={5} />
+            <AxesHelper /> {/* Added AxesHelper */}
             {poincarePoints.length > 0 && (
               <Points positions={new Float32Array(poincarePoints.flatMap(p => {
                 const coords = [p.x, p.y, 0];
