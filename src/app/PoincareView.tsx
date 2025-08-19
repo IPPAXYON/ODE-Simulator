@@ -97,8 +97,8 @@ export default function PoincareView({
                     onChange={(e) => onConfigChange({ planeVar: e.target.value })}
                   >
                     {allPoincareVars.flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v)}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v) + "'"}</option>
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
+                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
                   </select>
                 </label>
@@ -157,8 +157,8 @@ export default function PoincareView({
                     onChange={(e) => onConfigChange({ plotX: e.target.value })}
                   >
                     {allPoincareVars.flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v)}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v) + "'"}</option>
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
+                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
                   </select>
                 </label>
@@ -172,8 +172,8 @@ export default function PoincareView({
                     onChange={(e) => onConfigChange({ plotY: e.target.value })}
                   >
                     {allPoincareVars.flatMap(v => [
-                      <option key={v} value={v}>{formatPoincareVarName(v)}</option>,
-                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v) + "'"}</option>
+                      <option key={v} value={v}>{formatPoincareVarName(v).replace(/^p1_/, "")}</option>,
+                      <option key={v + "_dot"} value={v + "_dot"}>{formatPoincareVarName(v).replace(/^p1_/, "") + "'"}</option>
                     ])}
                   </select>
                 </label>
