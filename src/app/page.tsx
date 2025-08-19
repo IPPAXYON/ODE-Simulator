@@ -1,29 +1,15 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useMemo } from "react";
+import React, { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { Canvas } from "@react-three/fiber";
 import { Line, OrbitControls, Grid } from "@react-three/drei";
 import * as THREE from "three";
 import { create, all, MathNode } from "mathjs";
 import GraphView from "./GraphView";
+import PoincareView from "./PoincareView";
+import { Particle, GenVar, PoincareConfig } from "./types"; // Import PoincareConfig
 
 const math = create(all);
-
-// ===== Types =====
-type GenVar = {
-  name: string; // ユーザー変数名 (Unicode可)
-  order: number; // 階数 (0, 1, 2 など)
-  initial: string; // 初期値
-  initialDot?: string; // 初期速度 (1階以上で有効)
-  initialDDot?: string; // 初期加速度 (2階以上で有効)
-  expr: string; // d^order/dt^order の右辺
-};
-
-type Particle = {
-  id: number;
-  color: string;
-  vars: GenVar[]; // 上限3
-};
 
 const AXIS_COLORS = ["#ff4d4d", "#4dff6a", "#4da8ff"]; // X:red, Y:green, Z:blue
 const DEFAULT_PARTICLE_COLOR = "#ff4d4d";
@@ -46,6 +32,19 @@ export default function ODESimulatorCanvas() {
   // ===== View Control =====
   const [view, setView] = useState<"simulator" | "graph">("simulator");
   const [selectedVarIndex, setSelectedVarIndex] = useState<number | null>(null);
+  const [showPoincare, setShowPoincare] = useState<boolean>(false); // New state for Poincare view
+
+  // Poincare Section states
+  const [poincareConfig, setPoincareConfig] = useState<PoincareConfig>({
+    mode: "time",
+    period: "2 * PI",
+    planeVar: "",
+    planeValue: "0",
+    direction: "positive",
+    plotX: "",
+    plotY: "",
+  });
+  const [poincarePoints, setPoincarePoints] = useState<THREE.Vector3[]>([]);
 
   // ===== Display mode & phase config =====
   const [displayMode, setDisplayMode] = useState<"particle" | "phase">("particle");
@@ -574,6 +573,12 @@ export default function ODESimulatorCanvas() {
               <option value="phase">相空間</option>
             </select>
           </label>
+          <button
+            className="ml-auto px-3 py-1 rounded bg-pink-600"
+            onClick={() => setShowPoincare(true)}
+          >
+            ポアンカレ断面
+          </button>
         </div>
 
         <div className="flex-1 min-h-0 border border-slate-700 rounded overflow-hidden bg-slate-950">
@@ -864,6 +869,18 @@ export default function ODESimulatorCanvas() {
           </button>
         </div>
       </div>
+      {/* ポアンカレ断面ビュー */}
+      {showPoincare && (
+        <PoincareView
+          poincareConfig={poincareConfig}
+          setPoincareConfig={setPoincareConfig}
+          poincarePoints={poincarePoints}
+          setPoincarePoints={setPoincarePoints}
+          allPoincareVars={expandedVarNamesRef.current}
+          formatPoincareVarName={(nm) => nm}
+          onClose={() => setShowPoincare(false)}
+        />
+      )}
     </div>
   );
 }
