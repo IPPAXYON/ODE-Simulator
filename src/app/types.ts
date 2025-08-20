@@ -11,6 +11,7 @@ export type Particle = {
   id: number;
   color: string;
   vars: GenVar[]; // 上限3
+  visible: boolean;
 };
 
 export type PoincareConfig = {

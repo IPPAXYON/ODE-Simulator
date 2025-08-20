@@ -20,6 +20,7 @@ export default function ODESimulatorCanvas() {
     {
       id: 1,
       color: DEFAULT_PARTICLE_COLOR,
+      visible: true,
       vars: [
         { name: "x", order: 1, initial: "1", expr: "10*(y-x)" },
         { name: "y", order: 1, initial: "0", expr: "x*(28-z)-y" },
@@ -59,6 +60,7 @@ export default function ODESimulatorCanvas() {
   const [trailLength, setTrailLength] = useState<number>(500);
   const [isTrailInfinite, setIsTrailInfinite] = useState<boolean>(true);
   const [showTrail, setShowTrail] = useState<boolean>(true);
+  const [showParticles, setShowParticles] = useState<boolean>(true);
 
   // ===== Numeric engine refs =====
   const compiledRef = useRef<(MathNode | null)[]>([]);
@@ -104,34 +106,37 @@ export default function ODESimulatorCanvas() {
     const state0: number[] = [];
 
     // 変数展開（prefix: p{id}_）
+    // 0階もexpandedVarNamesに含めるが、stateベクトルには含めない
     particles.forEach((p) => {
       p.vars.slice(0, 3).forEach((g) => {
         const base = `p${p.id}_${g.name || "x"}`;
-        if (g.order > 0) expanded.push(base);
-        for (let o = 1; o < (g.order || 0); o++) {
-           if (o === 1) expanded.push(`${base}_dot`);
-           else if (o === 2) expanded.push(`${base}_ddot`);
-           else if (o === 3) expanded.push(`${base}_dddot`);
+        expanded.push(base); // 0階も追加
+        if (g.order > 0) {
+          for (let o = 1; o < (g.order || 0); o++) {
+            if (o === 1) expanded.push(`${base}_dot`);
+            else if (o === 2) expanded.push(`${base}_ddot`);
+            else if (o === 3) expanded.push(`${base}_dddot`);
+          }
         }
       });
     });
     expandedVarNamesRef.current = expanded;
 
-    // 式の並び（高階は連立1階に展開: x_dot = v, v_dot = f など）
+    // 式の並び（高階は連立1階に展開）
     particles.forEach((p) => {
       p.vars.slice(0, 3).forEach((g) => {
         const base = `p${p.id}_${g.name || "x"}`;
         if (g.order === 0) {
-          // 定数は微分なし
+          // 0階は微分方程式リストには含めない
         } else if (g.order === 1) {
           exprs.push(preprocessExpr(g.expr) || "0");
           exprPids.push(p.id);
         } else {
           // 1階〜(order-1)階は"その次の導関数"に等しい形
           for (let o = 1; o < g.order; o++) {
-          if (o === 1) exprs.push(`${base}_dot`);
-          else if (o === 2) exprs.push(`${base}_ddot`);
-          else if (o === 3) exprs.push(`${base}_dddot`);
+            if (o === 1) exprs.push(`${base}_dot`);
+            else if (o === 2) exprs.push(`${base}_ddot`);
+            else if (o === 3) exprs.push(`${base}_dddot`);
             exprPids.push(p.id);
           }
           // 最後に与えられた右辺
@@ -144,7 +149,7 @@ export default function ODESimulatorCanvas() {
     compiledRef.current = exprs.map((e) => compileExpression(e));
     exprParticleIdsRef.current = exprPids;
 
-    // 初期状態ベクトル
+    // 初期状態ベクトル (0階は含まない)
     const s0: number[] = [];
     particles.forEach((p) => {
       p.vars.slice(0, 3).forEach((g) => {
@@ -159,9 +164,22 @@ export default function ODESimulatorCanvas() {
     });
     stateRef.current = s0;
 
-    // name -> index マップ
+    // name -> index マップ (0階以外)
     const map: Record<string, number> = {};
-    expanded.forEach((nm, i) => { map[nm] = i; });
+    let stateIdx = 0;
+    particles.forEach(p => {
+        p.vars.slice(0, 3).forEach(g => {
+            if (g.order > 0) {
+                const base = `p${p.id}_${g.name || "x"}`;
+                map[base] = stateIdx++;
+                for (let o = 1; o < g.order; o++) {
+                    if (o === 1) map[`${base}_dot`] = stateIdx++;
+                    else if (o === 2) map[`${base}_ddot`] = stateIdx++;
+                    else if (o === 3) map[`${base}_dddot`] = stateIdx++;
+                }
+            }
+        });
+    });
     nameToIndexRef.current = map;
   };
 
@@ -202,57 +220,122 @@ export default function ODESimulatorCanvas() {
     }
   }
 
-  const evalDeriv = (y: number[], tNow: number) => {
-    const expanded = expandedVarNamesRef.current;
-    const scopeBase: Scope = { // This will now include baseScope
-      t: tNow,
-      ...baseScope, // Spread baseScope here
-    };
+  const createEvalScope = useCallback((forParticleId: number, sourceScope: Scope): Scope => {
+    const evalScope: Scope = { ...sourceScope };
 
-    // すべての展開名をスコープに入れる（p{id}_x など）
-    for (let i = 0; i < expanded.length; i++) scopeBase[expanded[i]] = y[i];
+    // --- Create Aliases ---
+    particles.forEach(p => {
+        p.vars.forEach(g => {
+            // A variable of order N has N state variables (derivatives 0 to N-1)
+            // We create aliases for all of them.
+            for (let i = 0; i < g.order; i++) {
+                const suffix = i === 0 ? '' : i === 1 ? '_dot' : i === 2 ? '_ddot' : '_dddot';
+                const shortName = `${g.name}${suffix}`;
+                const fullName = `p${p.id}_${g.name}${suffix}`;
+                const value = sourceScope[fullName];
 
-    // ユーティリティ（必要に応じて拡張）
-    scopeBase.dist = (i: number, j: number) => {
-      const pi = particles[i] ?? particles[0];
-      const pj = particles[j] ?? particles[0];
-      const ppos = (pid: number) => particlePos[pid] || [0, 0, 0];
-      const a = ppos(pi?.id ?? 0), b = ppos(pj?.id ?? 0);
-      return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-    };
+                if (typeof value === 'number') {
+                    // Suffixed alias (e.g., x1, y1_dot)
+                    evalScope[`${shortName}${p.id}`] = value;
 
+                    // Unprefixed alias (e.g., x, y_dot)
+                    // Priority: current particle > first particle in list
+                    if (p.id === forParticleId) {
+                        evalScope[shortName] = value;
+                    } else {
+                        if (evalScope[shortName] === undefined) {
+                            evalScope[shortName] = value;
+                        }
+                    }
+                }
+            }
+            // Also create alias for 0-order variable itself
+            if (g.order === 0) {
+                const fullName = `p${p.id}_${g.name}`;
+                const value = sourceScope[fullName];
+                 if (typeof value === 'number') {
+                    evalScope[`${g.name}${p.id}`] = value;
+                    if (p.id === forParticleId) {
+                        evalScope[g.name] = value;
+                    } else {
+                        if (evalScope[g.name] === undefined) {
+                            evalScope[g.name] = value;
+                        }
+                    }
+                }
+            }
+        });
+    });
+    return evalScope;
+  }, [particles]);
+
+
+  const getFullScope = useCallback((y: number[], tNow: number): Scope => {
+    const scope: Scope = { t: tNow, ...baseScope };
+
+    // 1. Populate scope with state vector variables (order > 0)
+    for (const name in nameToIndexRef.current) {
+        const idx = nameToIndexRef.current[name];
+        if (idx !== undefined) {
+            scope[name] = y[idx];
+        }
+    }
+
+    // 2. Iteratively evaluate 0th-order variables
+    for (let i = 0; i < 3; i++) { // Loop to resolve dependencies
+        particles.forEach(p_eval => {
+            p_eval.vars.forEach(g_eval => {
+                if (g_eval.order === 0) {
+                    const evalScope = createEvalScope(p_eval.id, scope);
+                    const node = compileExpression(g_eval.expr);
+                    const value = evaluateNode(node, evalScope);
+                    const baseName = `p${p_eval.id}_${g_eval.name || "x"}`;
+                    scope[baseName] = value;
+                }
+            });
+        });
+    }
+    return scope;
+  }, [particles, createEvalScope]);
+
+  const evalDeriv = useCallback((y: number[], tNow: number) => {
+    const scopeBase = getFullScope(y, tNow);
+    
     const out: number[] = [];
     for (let i = 0; i < compiledRef.current.length; i++) {
       const node = compiledRef.current[i];
       const pid = exprParticleIdsRef.current[i];
+      const evalScope = createEvalScope(pid, scopeBase);
+      
+      evalScope.dist = (p1_idx: number, p2_idx: number) => {
+        const p1 = particles[p1_idx];
+        const p2 = particles[p2_idx];
+        if (!p1 || !p2) return 0;
 
-      // 粒子ごとローカル名エイリアス（x, y, z, x_dot など）
-      const localScope: Scope = { ...scopeBase };
-      const p = particles.find((pp) => pp.id === pid);
-      if (p) {
-        p.vars.slice(0, 3).forEach((g) => {
-          const base = `p${p.id}_${g.name}`;
-          const idx0 = nameToIndexRef.current[base];
-          if (idx0 != null) localScope[g.name] = y[idx0];
-          // 導関数も解決
-          const d1 = nameToIndexRef.current[`${base}_dot`];
-          if (d1 != null) localScope[`${g.name}_dot`] = y[d1];
-          const d2 = nameToIndexRef.current[`${base}_ddot`];
-          if (d2 != null) localScope[`${g.name}_ddot`] = y[d2];
-          const d3 = nameToIndexRef.current[`${base}_dddot`];
-          if (d3 != null) localScope[`${g.name}_dddot`] = y[d3];
-        });
-      }
+        const getPos = (p: Particle) => {
+            const vals: number[] = [];
+            p.vars.slice(0, 3).forEach(g => {
+                const varName = `p${p.id}_${g.name}`;
+                const value = evalScope[varName];
+                vals.push(typeof value === 'number' ? value : 0);
+            });
+            while (vals.length < 3) vals.push(0);
+            return vals;
+        }
+        const pos1 = getPos(p1);
+        const pos2 = getPos(p2);
+        return Math.hypot(pos1[0] - pos2[0], pos1[1] - pos2[1], pos1[2] - pos2[2]);
+      };
 
-      const v = evaluateNode(node, localScope);
+      const v = evaluateNode(node, evalScope);
       out.push(v);
     }
     return out;
-  };
+  }, [getFullScope, createEvalScope, particles]);
 
   // ===== Integrator =====
-  const addScaled = (a: number[], b: number[], scale: number) => a.map((v, i) => v + (b[i] ?? 0) * scale);
-  const rk4 = (state: number[], h: number, tNow: number) => {
+  const rk4 = useCallback((state: number[], h: number, tNow: number) => {
+    const addScaled = (a: number[], b: number[], scale: number) => a.map((v, i) => v + (b[i] ?? 0) * scale);
     const k1 = evalDeriv(state, tNow);
     const s1 = addScaled(state, k1, h / 2);
     const k2 = evalDeriv(s1, tNow + h / 2);
@@ -261,16 +344,15 @@ export default function ODESimulatorCanvas() {
     const s3 = addScaled(state, k3, h);
     const k4 = evalDeriv(s3, tNow + h);
     return state.map((v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
-  };
+  }, [evalDeriv]);
 
   // ===== Helper: Poincare Section Sampling =====
-  const samplePoincare = (state: number[]) => {
-    const idxX = nameToIndexRef.current[poincareConfig.plotX];
-    const idxY = nameToIndexRef.current[poincareConfig.plotY];
-    if (idxX != null && idxY != null) {
-      const x = state[idxX] ?? 0;
-      const y = state[idxY] ?? 0;
-      const newPoint = new THREE.Vector3(x, y, 0);
+  const samplePoincare = (state: number[], scope: Scope) => {
+    const valX = scope[poincareConfig.plotX];
+    const valY = scope[poincareConfig.plotY];
+
+    if (typeof valX === 'number' && typeof valY === 'number') {
+      const newPoint = new THREE.Vector3(valX, valY, 0);
       setPoincarePoints(prev => [...prev, newPoint]);
     }
   };
@@ -306,44 +388,48 @@ export default function ODESimulatorCanvas() {
 
         stateRef.current = newState;
         timeRef.current += stepSize;
-        genHistoryRef.current.push({ time: timeRef.current, values: newState.slice() });
+        
+        const fullScope = getFullScope(newState, timeRef.current);
+        const historyValues: number[] = [];
+        expandedVarNamesRef.current.forEach(name => {
+            const val = fullScope[name];
+            historyValues.push(typeof val === 'number' ? val : 0);
+        });
+
+        genHistoryRef.current.push({ time: timeRef.current, values: historyValues });
         if (genHistoryRef.current.length > 2000) genHistoryRef.current.shift();
 
         // ---- Poincare Section Recording ----
         if (poincareConfig.mode === "time") {
           try {
             const Tnode = compileExpression(poincareConfig.period);
-            const currentScope: Scope = { t: timeRef.current, ...baseScope };
-            const T = evaluateNode(Tnode, currentScope) || 0;
+            const T = evaluateNode(Tnode, fullScope) || 0;
             if (T > 0) {
               const prevT = timeRef.current - stepSize;
               const nPrev = Math.floor(prevT / T);
               const nNow = Math.floor(timeRef.current / T);
-              if (nNow > nPrev) samplePoincare(newState);
+              if (nNow > nPrev) samplePoincare(newState, fullScope);
             }
           } catch {}
         } else if (poincareConfig.mode === "plane") {
-          const idx = nameToIndexRef.current[poincareConfig.planeVar];
-          if (idx != null) {
-            const prevVal = prevState[idx]; // 前ステップの値を使用
-            const newVal = newState[idx];
+          const planeVarValue = fullScope[poincareConfig.planeVar];
+          const prevScope = getFullScope(prevState, tNow);
+          const prevPlaneVarValue = prevScope[poincareConfig.planeVar];
+
+          if (typeof planeVarValue === 'number' && typeof prevPlaneVarValue === 'number') {
             const planeVal = Number(poincareConfig.planeValue) || 0;
-
-
             let crossed = false;
-            if (poincareConfig.direction === "positive" && prevVal < planeVal && newVal >= planeVal) {
+            if (poincareConfig.direction === "positive" && prevPlaneVarValue < planeVal && planeVarValue >= planeVal) {
               crossed = true;
-            } else if (poincareConfig.direction === "negative" && prevVal > planeVal && newVal <= planeVal) {
+            } else if (poincareConfig.direction === "negative" && prevPlaneVarValue > planeVal && planeVarValue <= planeVal) {
               crossed = true;
-            } else if (poincareConfig.direction === "both" && ((prevVal < planeVal && newVal >= planeVal) || (prevVal > planeVal && newVal <= planeVal))) {
+            } else if (poincareConfig.direction === "both" && ((prevPlaneVarValue < planeVal && planeVarValue >= planeVal) || (prevPlaneVarValue > planeVal && planeVarValue <= planeVal))) {
               crossed = true;
             }
 
             if (crossed) {
-              samplePoincare(newState);
-            } else {
+              samplePoincare(newState, fullScope);
             }
-          } else {
           }
         }
         // ---- End Poincare Section Recording ----
@@ -351,14 +437,12 @@ export default function ODESimulatorCanvas() {
         // 粒子ごとの現在位置を更新
         const newPositions: Record<number, [number, number, number]> = {};
         if (displayMode === "particle") {
-          let idx = 0;
           particles.forEach((p) => {
             const vals: number[] = [];
             p.vars.slice(0, 3).forEach((g) => {
-              if (g.order > 0) {
-                vals.push(stateRef.current[idx] ?? 0);
-                idx += g.order;
-              }
+              const varName = `p${p.id}_${g.name}`;
+              const value = fullScope[varName];
+              vals.push(typeof value === 'number' ? value : 0);
             });
             while (vals.length < 3) vals.push(0);
             newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
@@ -366,23 +450,12 @@ export default function ODESimulatorCanvas() {
         } else {
           particles.forEach((p) => {
             const config = phaseConfig[p.id];
-            if (config?.x && config?.y && config?.z) {
-              const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-              const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-              const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
-              const vx = stateRef.current[idxX] ?? 0;
-              const vy = stateRef.current[idxY] ?? 0;
-              const vz = stateRef.current[idxZ] ?? 0;
-              newPositions[p.id] = [vx, vy, vz];
-            } else if (config?.x && config?.y) {
-              const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-              const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-              const vx = stateRef.current[idxX] ?? 0;
-              const vy = stateRef.current[idxY] ?? 0;
-              newPositions[p.id] = [vx, vy, 0];
-            } else {
-              newPositions[p.id] = [0, 0, 0];
-            }
+            const getVal = (name: string | undefined) => {
+                if (!name) return 0;
+                const val = fullScope[`p${p.id}_${name}`];
+                return typeof val === 'number' ? val : 0;
+            };
+            newPositions[p.id] = [getVal(config?.x), getVal(config?.y), getVal(config?.z)];
           });
         }
         setParticlePos(newPositions);
@@ -410,7 +483,36 @@ export default function ODESimulatorCanvas() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     };
-  }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, particles]);
+  }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, particles, rk4, getFullScope, poincareConfig]);
+
+  const updatePositions = useCallback((state: number[], t: number) => {
+    const fullScope = getFullScope(state, t);
+    const newPositions: Record<number, [number, number, number]> = {};
+
+    if (displayMode === "particle") {
+        particles.forEach((p) => {
+            const vals: number[] = [];
+            p.vars.slice(0, 3).forEach((g) => {
+                const varName = `p${p.id}_${g.name}`;
+                const value = fullScope[varName];
+                vals.push(typeof value === 'number' ? value : 0);
+            });
+            while (vals.length < 3) vals.push(0);
+            newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
+        });
+    } else { // phase
+        particles.forEach((p) => {
+            const config = phaseConfig[p.id];
+            const getVal = (name: string | undefined) => {
+                if (!name) return 0;
+                const val = fullScope[`p${p.id}_${name}`];
+                return typeof val === 'number' ? val : 0;
+            };
+            newPositions[p.id] = [getVal(config?.x), getVal(config?.y), getVal(config?.z)];
+        });
+    }
+    setParticlePos(newPositions);
+  }, [displayMode, particles, phaseConfig, getFullScope]);
 
   // ===== UI handlers =====
   const toggleRunning = () => setRunning((r) => !r);
@@ -421,46 +523,7 @@ export default function ODESimulatorCanvas() {
     genHistoryRef.current = [];
     setTrails({});
     buildSystem();
-
-    // 初期位置の設定
-    const s = stateRef.current;
-    const newPositions: Record<number, [number, number, number]> = {};
-    if (displayMode === "particle") {
-      let idx = 0;
-      particles.forEach((p) => {
-        const vals: number[] = [];
-        p.vars.slice(0, 3).forEach((g) => {
-          if (g.order > 0) {
-            vals.push(s[idx] ?? 0);
-            idx += g.order;
-          }
-        });
-        while (vals.length < 3) vals.push(0);
-        newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-      });
-    } else {
-      particles.forEach((p) => {
-        const config = phaseConfig[p.id];
-        if (config?.x && config?.y && config?.z) {
-          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-          const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
-          const vx = s[idxX] ?? 0;
-          const vy = s[idxY] ?? 0;
-          const vz = s[idxZ] ?? 0;
-          newPositions[p.id] = [vx, vy, vz];
-        } else if (config?.x && config?.y) {
-          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-          const vx = s[idxX] ?? 0;
-          const vy = s[idxY] ?? 0;
-          newPositions[p.id] = [vx, vy, 0];
-        } else {
-          newPositions[p.id] = [0, 0, 0];
-        }
-      });
-    }
-    setParticlePos(newPositions);
+    updatePositions(stateRef.current, 0);
   };
 
   const applyAndCompile = () => {
@@ -468,45 +531,7 @@ export default function ODESimulatorCanvas() {
     timeRef.current = 0;
     genHistoryRef.current = [];
     setTrails({});
-
-    const s = stateRef.current;
-    const newPositions: Record<number, [number, number, number]> = {};
-    if (displayMode === "particle") {
-      let idx = 0;
-      particles.forEach((p) => {
-        const vals: number[] = [];
-        p.vars.slice(0, 3).forEach((g) => {
-          if (g.order > 0) {
-            vals.push(s[idx] ?? 0);
-            idx += g.order;
-          }
-        });
-        while (vals.length < 3) vals.push(0);
-        newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-      });
-    } else {
-      particles.forEach((p) => {
-        const config = phaseConfig[p.id];
-        if (config?.x && config?.y && config?.z) {
-          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-          const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
-          const vx = s[idxX] ?? 0;
-          const vy = s[idxY] ?? 0;
-          const vz = s[idxZ] ?? 0;
-          newPositions[p.id] = [vx, vy, vz];
-        } else if (config?.x && config?.y) {
-          const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-          const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-          const vx = s[idxX] ?? 0;
-          const vy = s[idxY] ?? 0;
-          newPositions[p.id] = [vx, vy, 0];
-        } else {
-          newPositions[p.id] = [0, 0, 0];
-        }
-      });
-    }
-    setParticlePos(newPositions);
+    updatePositions(stateRef.current, 0);
   };
 
   // 変数編集（アクティブ粒子のみ既存UIを流用）
@@ -546,6 +571,7 @@ export default function ODESimulatorCanvas() {
       {
         id: newId,
         color: "#" + Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0"),
+        visible: true,
         vars: [{ name: "x", order: 1, initial: "0", expr: "0" }],
       },
     ]);
@@ -560,6 +586,12 @@ export default function ODESimulatorCanvas() {
   };
   const updateParticleColor = (pid: number, color: string) => {
     setParticles((prev) => prev.map((p) => (p.id === pid ? { ...p, color } : p)));
+  };
+
+  const toggleParticleVisibility = (pid: number) => {
+    setParticles(prev =>
+      prev.map(p => (p.id === pid ? { ...p, visible: !p.visible } : p))
+    );
   };
 
   // ===== Axes helper =====
@@ -657,7 +689,7 @@ export default function ODESimulatorCanvas() {
             <Grid infiniteGrid fadeDistance={30} fadeStrength={5} />
             <AxesHelper />
 
-            {particles.map((p) => (
+            {showParticles && particles.filter(p => p.visible).map((p) => (
               <React.Fragment key={p.id}>
                 <mesh position={particlePos[p.id] || [0, 0, 0]}> 
                   <sphereGeometry args={[0.2, 32, 32]} />
@@ -696,6 +728,10 @@ export default function ODESimulatorCanvas() {
             軌跡表示
           </label>
           <label className="flex items-center gap-1 ml-2">
+            <input type="checkbox" checked={showParticles} onChange={(e) => setShowParticles(e.target.checked)} />
+            質点表示
+          </label>
+          <label className="flex items-center gap-1 ml-2">
             <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} />
             軸表示
           </label>
@@ -704,38 +740,53 @@ export default function ODESimulatorCanvas() {
 
       {/* === Sidebar (UIはできる限り既存を維持) === */}
       <div className="w-2/5 flex flex-col gap-4 overflow-y-auto h-full pr-2">
-        {/* 粒子管理（最小限）：追加・選択・削除・色 */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <button className="px-3 py-1 rounded bg-purple-600" onClick={addParticle}>質点を追加</button>
-          <label className="text-xs">対象質点:
-            <select
-              className="ml-1 bg-slate-700 rounded px-1"
-              value={activePid}
-              onChange={(e) => setActivePid(Number(e.target.value))}
-            >
-              {particles.map((p) => (
-                <option key={p.id} value={p.id}>{`質点 ${p.id}`}</option>
-              ))}
-            </select>
-          </label>
-          {activeParticle && (
-            <>
-              <label className="flex items-center gap-1 text-xs">
-                色:
+        {/* 粒子管理 */}
+        <div className="flex flex-col gap-2 border border-slate-700 rounded p-3">
+          <div className="flex items-center justify-between">
+            <strong className="text-base">質点リスト</strong>
+            <button className="px-3 py-1 rounded bg-purple-600 text-sm" onClick={addParticle}>質点を追加</button>
+          </div>
+          <div className="flex flex-col gap-2 mt-2">
+            {particles.map((p) => (
+              <div
+                key={p.id}
+                className={`flex items-center gap-3 p-2 rounded cursor-pointer ${activePid === p.id ? 'bg-slate-700' : 'bg-slate-800'}`}
+                onClick={() => setActivePid(p.id)}
+              >
+                <input
+                  type="checkbox"
+                  checked={p.visible}
+                  onChange={(e) => {
+                    e.stopPropagation(); // 親のonClickを発火させない
+                    toggleParticleVisibility(p.id);
+                  }}
+                  className="form-checkbox h-5 w-5 bg-slate-900 border-slate-600 text-blue-500 focus:ring-blue-500"
+                />
+                <span className="font-bold text-sm flex-1">{`質点 ${p.id}`}</span>
                 <input
                   type="color"
-                  className="ml-1 w-6 h-6 rounded border-0 p-0"
-                  value={activeParticle.color}
-                  onChange={(e) => updateParticleColor(activeParticle.id, e.target.value)}
+                  value={p.color}
+                  onChange={(e) => {
+                    e.stopPropagation();
+                    updateParticleColor(p.id, e.target.value);
+                  }}
+                  className="w-6 h-6 rounded border-0 p-0 bg-transparent"
+                  onClick={(e) => e.stopPropagation()}
                 />
-              </label>
-              {particles.length > 1 && (
-                <button className="bg-red-600 px-2 py-0.5 rounded text-sm" onClick={() => removeParticle(activeParticle.id)}>
-                  選択質点を削除
-                </button>
-              )}
-            </>
-          )}
+                {particles.length > 1 && (
+                  <button
+                    className="bg-red-600 px-2 py-0.5 rounded text-xs"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeParticle(p.id);
+                    }}
+                  >
+                    削除
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* 既存の変数UI：選択中の粒子に対してのみ表示（最大3変数） */}
@@ -892,44 +943,7 @@ export default function ODESimulatorCanvas() {
             className="bg-gray-600 px-3 py-1 rounded"
             onClick={() => {
               buildSystem();
-              const s = stateRef.current;
-              const newPositions: Record<number, [number, number, number]> = {};
-              if (displayMode === "particle") {
-                let idx = 0;
-                particles.forEach((p) => {
-                  const vals: number[] = [];
-                  p.vars.slice(0, 3).forEach((g) => {
-                    if (g.order > 0) {
-                      vals.push(s[idx] ?? 0);
-                      idx += g.order;
-                    }
-                  });
-                  while (vals.length < 3) vals.push(0);
-                  newPositions[p.id] = [vals[0], vals[1], vals[2]] as [number, number, number];
-                });
-              } else {
-                particles.forEach((p) => {
-                  const config = phaseConfig[p.id];
-                  if (config?.x && config?.y && config?.z) {
-                    const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-                    const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-                    const idxZ = nameToIndexRef.current[`p${p.id}_${config.z}`];
-                    const vx = s[idxX] ?? 0;
-                    const vy = s[idxY] ?? 0;
-                    const vz = s[idxZ] ?? 0;
-                    newPositions[p.id] = [vx, vy, vz];
-                  } else if (config?.x && config?.y) {
-                    const idxX = nameToIndexRef.current[`p${p.id}_${config.x}`];
-                    const idxY = nameToIndexRef.current[`p${p.id}_${config.y}`];
-                    const vx = s[idxX] ?? 0;
-                    const vy = s[idxY] ?? 0;
-                    newPositions[p.id] = [vx, vy, 0];
-                  } else {
-                    newPositions[p.id] = [0, 0, 0];
-                  }
-                });
-              }
-              setParticlePos(newPositions);
+              updatePositions(stateRef.current, 0);
             }}
           >
             Set Initials
