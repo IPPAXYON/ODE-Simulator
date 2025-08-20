@@ -77,14 +77,15 @@ export default function ODESimulatorCanvas() {
   const rafRef = useRef<number | null>(null);
 
   // ===== Helpers =====
-  function preprocessExpr(expr: string): string {
+  const preprocessExpr = useCallback((expr: string): string => {
     if (!expr) return expr;
     return expr
       .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'''/g, "$1_dddot")
       .replace(/([a-zA-Z_][a-zA-Z0-9_]*)''/g, "$1_ddot")
       .replace(/([a-zA-Z_][a-zA-Z0-9_]*)'/g, "$1_dot");
-  }
-  function compileExpression(expr: string): MathNode | null {
+  }, []);
+
+  const compileExpression = useCallback((expr: string): MathNode | null => {
     if (!expr || expr.trim() === "") return null;
     try {
       return math.parse(preprocessExpr(expr));
@@ -92,31 +93,35 @@ export default function ODESimulatorCanvas() {
       console.warn("parse error", expr, err);
       return null;
     }
-  }
+  }, [preprocessExpr]);
 
   // UI util
   const activeParticle = useMemo(() => particles.find(p => p.id === activePid) ?? particles[0], [particles, activePid]);
   const variableUiColor = (index: number) => AXIS_COLORS[index % AXIS_COLORS.length];
 
   // ===== System builder =====
-  const buildSystem = () => {
+  const buildSystem = useCallback(() => {
     const expanded: string[] = [];
     const exprs: string[] = [];
     const exprPids: number[] = [];
-    const state0: number[] = [];
+
 
     // 変数展開（prefix: p{id}_）
-    // 0階もexpandedVarNamesに含めるが、stateベクトルには含めない
+    // expandedVarNamesRefは、グラフ表示と値の評価スコープ生成の両方で使われる
+    // 全ての粒子の全ての状態変数（0階〜order-1階）を正しい順序で含める必要がある
     particles.forEach((p) => {
       p.vars.slice(0, 3).forEach((g) => {
         const base = `p${p.id}_${g.name || "x"}`;
-        expanded.push(base); // 0階も追加
-        if (g.order > 0) {
-          for (let o = 1; o < (g.order || 0); o++) {
-            if (o === 1) expanded.push(`${base}_dot`);
+        // 0階から(order-1)階までの全ての状態変数を追加
+        for (let o = 0; o < g.order; o++) {
+            if (o === 0) expanded.push(base);
+            else if (o === 1) expanded.push(`${base}_dot`);
             else if (o === 2) expanded.push(`${base}_ddot`);
             else if (o === 3) expanded.push(`${base}_dddot`);
-          }
+        }
+        // 0階のみの変数の場合も追加
+        if (g.order === 0) {
+            expanded.push(base);
         }
       });
     });
@@ -133,11 +138,10 @@ export default function ODESimulatorCanvas() {
           exprPids.push(p.id);
         } else {
           // 1階〜(order-1)階は"その次の導関数"に等しい形
-          for (let o = 1; o < g.order; o++) {
-            if (o === 1) exprs.push(`${base}_dot`);
-            else if (o === 2) exprs.push(`${base}_ddot`);
-            else if (o === 3) exprs.push(`${base}_dddot`);
-            exprPids.push(p.id);
+          for (let o = 0; o < g.order - 1; o++) {
+            if (o === 0) exprs.push(`${base}_dot`);
+            else if (o === 1) exprs.push(`${base}_ddot`);
+            else if (o === 2) exprs.push(`${base}_dddot`);
           }
           // 最後に与えられた右辺
           exprs.push(preprocessExpr(g.expr) || "0");
@@ -181,7 +185,7 @@ export default function ODESimulatorCanvas() {
         });
     });
     nameToIndexRef.current = map;
-  };
+  }, [particles, compileExpression, preprocessExpr]);
 
   // ===== Evaluator =====
   interface BaseScopeConstants {
@@ -514,6 +518,12 @@ export default function ODESimulatorCanvas() {
     setParticlePos(newPositions);
   }, [displayMode, particles, phaseConfig, getFullScope]);
 
+  // 質点の情報が変更されたら、計算システムを再構築する
+  useEffect(() => {
+    buildSystem();
+    updatePositions(stateRef.current, timeRef.current);
+  }, [particles, buildSystem, updatePositions]);
+
   // ===== UI handlers =====
   const toggleRunning = () => setRunning((r) => !r);
 
@@ -609,14 +619,62 @@ export default function ODESimulatorCanvas() {
 
   // ===== Graph view (選択粒子だけをフィルタして渡す) =====
   if (view === "graph" && activeParticle) {
-    const prefix = `p${activeParticle.id}_`;
     const allNames = expandedVarNamesRef.current;
-    const indices = allNames.map((nm, i) => (nm.startsWith(prefix) ? i : -1)).filter((i) => i >= 0);
-    const filteredNames = indices.map((i) => allNames[i].slice(prefix.length));
-    const filteredHistory = genHistoryRef.current.map((h) => ({
-      time: h.time,
-      values: indices.map((i) => h.values[i] ?? 0),
-    }));
+
+    // Create a mapping from a variable name to its index in the global history array
+    const nameToHistoryIndex: Record<string, number> = {};
+    allNames.forEach((name, index) => {
+        nameToHistoryIndex[name] = index;
+    });
+
+    // Create a history that is filtered and ordered specifically for the active particle's GraphView
+    const filteredHistory = genHistoryRef.current.map(h => {
+        const particleStateValues: number[] = [];
+        
+        activeParticle.vars.forEach(v => {
+            if (v.order === 0) {
+                const varName = `p${activeParticle.id}_${v.name}`;
+                const historyIndex = nameToHistoryIndex[varName];
+                if (historyIndex !== undefined) {
+                    particleStateValues.push(h.values[historyIndex] ?? 0);
+                } else {
+                    particleStateValues.push(0); // Fallback
+                }
+            } else {
+                for (let o = 0; o < v.order; o++) {
+                    let varName = `p${activeParticle.id}_${v.name}`;
+                    if (o === 1) varName += '_dot';
+                    else if (o === 2) varName += '_ddot';
+                    else if (o === 3) varName += '_dddot';
+
+                    const historyIndex = nameToHistoryIndex[varName];
+                    if (historyIndex !== undefined) {
+                        particleStateValues.push(h.values[historyIndex] ?? 0);
+                    } else {
+                        particleStateValues.push(0);
+                    }
+                }
+            }
+        });
+
+        return { time: h.time, values: particleStateValues };
+    });
+
+    const filteredNames = activeParticle.vars.flatMap(v => {
+        const baseName = v.name;
+        if (v.order === 0) {
+            return [baseName];
+        }
+        const names = [];
+        for (let o = 0; o < v.order; o++) {
+            let name = baseName;
+            if (o === 1) name += '˙';
+            else if (o === 2) name += '¨';
+            else if (o === 3) name += "'''";
+            names.push(name);
+        }
+        return names;
+    });
 
     return (
       <GraphView
@@ -728,10 +786,6 @@ export default function ODESimulatorCanvas() {
             軌跡表示
           </label>
           <label className="flex items-center gap-1 ml-2">
-            <input type="checkbox" checked={showParticles} onChange={(e) => setShowParticles(e.target.checked)} />
-            質点表示
-          </label>
-          <label className="flex items-center gap-1 ml-2">
             <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} />
             軸表示
           </label>
@@ -743,8 +797,8 @@ export default function ODESimulatorCanvas() {
         {/* 粒子管理 */}
         <div className="flex flex-col gap-2 border border-slate-700 rounded p-3">
           <div className="flex items-center justify-between">
-            <strong className="text-base">質点リスト</strong>
-            <button className="px-3 py-1 rounded bg-purple-600 text-sm" onClick={addParticle}>質点を追加</button>
+            <strong className="text-base">{displayMode === "phase" ? "系リスト" : "質点リスト"}</strong>
+            <button className="px-3 py-1 rounded bg-purple-600 text-sm" onClick={addParticle}>{displayMode === "phase" ? "系を追加" : "質点を追加"}</button>
           </div>
           <div className="flex flex-col gap-2 mt-2">
             {particles.map((p) => (
@@ -762,7 +816,7 @@ export default function ODESimulatorCanvas() {
                   }}
                   className="form-checkbox h-5 w-5 bg-slate-900 border-slate-600 text-blue-500 focus:ring-blue-500"
                 />
-                <span className="font-bold text-sm flex-1">{`質点 ${p.id}`}</span>
+                <span className="font-bold text-sm flex-1">{displayMode === "phase" ? `系${p.id}` :`質点 ${p.id}`}</span>
                 <input
                   type="color"
                   value={p.color}
@@ -851,9 +905,10 @@ export default function ODESimulatorCanvas() {
               <div className="text-xs">微分方程式(右辺)</div>
               <textarea className="w-full rounded bg-slate-700 px-1 py-1 mt-1 text-sm" value={g.expr} onChange={(e) => updateVar(i, { expr: e.target.value })} rows={3} />
               <div className="mt-1 text-xs text-gray-300">
-                {(g.order ?? 1) === 0 ? "これは定数です。" : `d^${g.order}${g.name}/dt^${g.order} = の右辺を入力してください。`}<br />
+                {(g.order ?? 1) === 0 ? `${g.name} = の右辺を入力してください。` : `d^${g.order}${g.name}/dt^${g.order} = の右辺を入力してください。`}<br />
                 式中では t、定数 eps0, mu0, k, g, G を使用可能。<br />
-                微分はアポストロフィで入力してください。
+                微分はアポストロフィで入力してください。<br />
+                sin(), cos(), tan(), exp(), log(), sqrt() などの関数も使用可能。<br />
               </div>
             </div>
           </div>
@@ -862,7 +917,7 @@ export default function ODESimulatorCanvas() {
         {/* Phase space axis selection */}
         {displayMode === "phase" && activeParticle && (
           <div className="text-xs mt-2">
-            <div>相空間軸選択:</div>
+            <div>位相空間軸選択:</div>
             <div className="flex gap-2 mt-1">
               <select
                 value={phaseConfig[activeParticle.id]?.x || ""}
@@ -946,7 +1001,7 @@ export default function ODESimulatorCanvas() {
               updatePositions(stateRef.current, 0);
             }}
           >
-            Set Initials
+            リセット
           </button>
         </div>
       </div>

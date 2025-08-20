@@ -88,7 +88,7 @@ export default function GraphView({
 
   let selectedVarStateStartIndex = 0;
   for (let i = 0; i < selectedVarIndex; i++) {
-    selectedVarStateStartIndex += vars[i].order;
+    selectedVarStateStartIndex += vars[i].order > 0 ? vars[i].order : 1;
   }
 
   const derivativeSuffixes = ['', '˙', '¨'];
@@ -154,8 +154,15 @@ export default function GraphView({
       currentDerivativeValues = historyData.map(d => d.values[varIndex]);
     } else {
       // If this derivative is higher than the ODE order, numerically differentiate the previous one
-      if (i === 0) { // This case should only happen if selectedVar.order is 0 (constant)
-          currentDerivativeValues = historyData.map(() => Number(selectedVar.initial) || 0); // For order 0 constant
+      if (i === 0) { // This case is for the 0-th derivative itself
+          if (selectedVar.order === 0) {
+            // For order 0 variables, the value is directly in the history.
+            const varIndex = selectedVarStateStartIndex;
+            currentDerivativeValues = historyData.map(d => d.values[varIndex] ?? 0);
+          } else {
+            // This should not be reached if the logic is correct, but as a fallback.
+            currentDerivativeValues = historyData.map(() => Number(selectedVar.initial) || 0);
+          }
       } else {
           // Numerically differentiate the (i-1)th derivative data
           currentDerivativeValues = calculateDerivative(derivativeData[i - 1], timeSteps);
