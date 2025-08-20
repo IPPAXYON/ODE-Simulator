@@ -119,6 +119,12 @@ export default function ODESimulatorCanvas() {
             else if (o === 2) expanded.push(`${base}_ddot`);
             else if (o === 3) expanded.push(`${base}_dddot`);
         }
+        // For variables with order > 0, also add the N-th derivative for plotting purposes
+        if (g.order > 0) {
+            if (g.order === 1) expanded.push(`${base}_dot`);
+            else if (g.order === 2) expanded.push(`${base}_ddot`);
+            else if (g.order === 3) expanded.push(`${base}_dddot`);
+        }
         // 0階のみの変数の場合も追加
         if (g.order === 0) {
             expanded.push(base);
@@ -273,8 +279,21 @@ export default function ODESimulatorCanvas() {
     return evalScope;
   }, [particles]);
 
+  const getBasicScope = useCallback((y: number[], tNow: number): Scope => {
+    const scope: Scope = { t: tNow, ...baseScope };
 
-  const getFullScope = useCallback((y: number[], tNow: number): Scope => {
+    // Populate scope with state vector variables (order > 0)
+    for (const name in nameToIndexRef.current) {
+        const idx = nameToIndexRef.current[name];
+        if (idx !== undefined) {
+            scope[name] = y[idx];
+        }
+    }
+    return scope;
+  }, []);
+
+
+  const getFullScope = useCallback((y: number[], tNow: number, derivatives: number[]): Scope => {
     const scope: Scope = { t: tNow, ...baseScope };
 
     // 1. Populate scope with state vector variables (order > 0)
@@ -284,6 +303,35 @@ export default function ODESimulatorCanvas() {
             scope[name] = y[idx];
         }
     }
+
+    // Additionally, if a higher-order derivative (N-th derivative for an N-order system) is requested,
+    // use the provided derivatives.
+    // This is for plotting axes that go beyond the state vector's direct representation (0 to N-1 derivatives).
+    particles.forEach(p => {
+        p.vars.forEach(v => {
+            const baseName = `p${p.id}_${v.name || "x"}`;
+            // Check for N-th derivative (e.g., x''' for a 3rd order system)
+            if (v.order === 1) { // If order is 1, we might need x_dot
+                const dotName = `${baseName}_dot`;
+                const idx = nameToIndexRef.current[baseName]; // Index of x
+                if (idx !== undefined && derivatives[idx] !== undefined) {
+                    scope[dotName] = derivatives[idx];
+                }
+            } else if (v.order === 2) { // If order is 2, we might need x_ddot
+                const ddotName = `${baseName}_ddot`;
+                const idx = nameToIndexRef.current[`${baseName}_dot`]; // Index of x_dot
+                if (idx !== undefined && derivatives[idx] !== undefined) {
+                    scope[ddotName] = derivatives[idx];
+                }
+            } else if (v.order === 3) { // If order is 3, we might need x_dddot
+                const dddotName = `${baseName}_dddot`;
+                const idx = nameToIndexRef.current[`${baseName}_ddot`]; // Index of x_ddot
+                if (idx !== undefined && derivatives[idx] !== undefined) {
+                    scope[dddotName] = derivatives[idx];
+                }
+            }
+        });
+    });
 
     // 2. Iteratively evaluate 0th-order variables
     for (let i = 0; i < 3; i++) { // Loop to resolve dependencies
@@ -303,7 +351,7 @@ export default function ODESimulatorCanvas() {
   }, [particles, createEvalScope]);
 
   const evalDeriv = useCallback((y: number[], tNow: number) => {
-    const scopeBase = getFullScope(y, tNow);
+    const scopeBase = getBasicScope(y, tNow);
     
     const out: number[] = [];
     for (let i = 0; i < compiledRef.current.length; i++) {
@@ -393,7 +441,8 @@ export default function ODESimulatorCanvas() {
         stateRef.current = newState;
         timeRef.current += stepSize;
         
-        const fullScope = getFullScope(newState, timeRef.current);
+        const newDerivatives = evalDeriv(newState, timeRef.current); // Calculate derivatives for newState
+        const fullScope = getFullScope(newState, timeRef.current, newDerivatives);
         const historyValues: number[] = [];
         expandedVarNamesRef.current.forEach(name => {
             const val = fullScope[name];
@@ -417,7 +466,8 @@ export default function ODESimulatorCanvas() {
           } catch {}
         } else if (poincareConfig.mode === "plane") {
           const planeVarValue = fullScope[poincareConfig.planeVar];
-          const prevScope = getFullScope(prevState, tNow);
+          const prevDerivatives = evalDeriv(prevState, tNow);
+          const prevScope = getFullScope(prevState, tNow, prevDerivatives);
           const prevPlaneVarValue = prevScope[poincareConfig.planeVar];
 
           if (typeof planeVarValue === 'number' && typeof prevPlaneVarValue === 'number') {
@@ -490,7 +540,8 @@ export default function ODESimulatorCanvas() {
   }, [running, dt, playbackSpeed, trailLength, isTrailInfinite, showTrail, particles, rk4, getFullScope, poincareConfig]);
 
   const updatePositions = useCallback((state: number[], t: number) => {
-    const fullScope = getFullScope(state, t);
+    const derivatives = evalDeriv(state, t); // Calculate derivatives for the current state
+    const fullScope = getFullScope(state, t, derivatives);
     const newPositions: Record<number, [number, number, number]> = {};
 
     if (displayMode === "particle") {
