@@ -635,7 +635,7 @@ export default function ODESimulatorCanvas() {
               onChange={e => setDisplayMode(e.target.value as "particle" | "phase")}
             >
               <option value="particle">質点運動</option>
-              <option value="phase">相空間</option>
+              <option value="phase">位相空間</option>
             </select>
           </label>
           {displayMode === "phase" && (
